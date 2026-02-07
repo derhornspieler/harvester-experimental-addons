@@ -1,0 +1,32 @@
+---
+# Deploy Rancher inside the k3k cluster
+# Apply this to the k3k cluster (not the host cluster)
+#
+# CONFIGURE BEFORE APPLYING:
+# - hostname: your Rancher URL (must resolve to Harvester VIP)
+# - bootstrapPassword: initial admin password
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cattle-system
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: rancher
+  namespace: kube-system
+spec:
+  targetNamespace: cattle-system
+  repo: https://releases.rancher.com/server-charts/latest
+  chart: rancher
+  version: v2.13.0
+  helmVersion: v3
+  set:
+    ingress.tls.source: rancher
+    # REQUIRED: Set to your Rancher hostname
+    hostname: rancher.example.com
+    replicas: 1
+    global.cattle.psp.enabled: "false"
+    # REQUIRED: Set your initial admin password
+    bootstrapPassword: admin

@@ -17,10 +17,12 @@ spec:
   version: "v0.30.0"
   chart: vcluster
   valuesContent: |-
-    global:
-      hostname: ""
-      rancherVersion: v2.13.0 
-      bootstrapPassword: ""
+    # NOTE: vCluster 0.30.0 has strict schema validation.
+    # Custom values must be hardcoded in manifestsTemplate below.
+    # Edit the following values in the HelmChart spec:
+    #   - hostname: your Rancher URL (must resolve to Harvester VIP)
+    #   - version: Rancher version to deploy
+    #   - bootstrapPassword: initial admin password
 
     sync:
       toHost:
@@ -34,7 +36,7 @@ spec:
           image:
             registry: ""
             repository: "rancher/k3s"
-            tag: "v1.34.2-k3s1"
+            tag: "v1.31.4-k3s1"
           securityContext: {}
           resources:
             limits:
@@ -48,18 +50,15 @@ spec:
           embedded:
             enabled: true
 
-
       statefulSet:
         image:
           registry: "ghcr.io"
           repository: "loft-sh/vcluster-pro"
           tag: "0.30.0"
         resources:
-          # Limits are resource limits for the container
           limits:
             ephemeral-storage: 10Gi
             memory: 4Gi
-          # Requests are minimal resources that will be consumed by the container
           requests:
             ephemeral-storage: 1Gi
             cpu: 200m
@@ -90,10 +89,10 @@ spec:
               targetNamespace: cert-manager
               repo: https://charts.jetstack.io
               chart: cert-manager
-              version: v1.5.1
+              version: v1.17.1
               helmVersion: v3
               set:
-                installCRDs: "true"
+                crds.enabled: "true"
             ---
             apiVersion: helm.cattle.io/v1
             kind: HelmChart
@@ -104,13 +103,16 @@ spec:
               targetNamespace: cattle-system
               repo: https://releases.rancher.com/server-charts/latest
               chart: rancher
-              version: {{ .Values.global.rancherVersion }}
+              # =====================================================
+              # CONFIGURE THESE VALUES BEFORE ENABLING THE ADDON
+              # =====================================================
+              version: v2.13.0
               set:
                 ingress.tls.source: rancher
-                hostname: {{ .Values.global.hostname }}
+                # REQUIRED: Set to your Rancher hostname (must resolve to Harvester VIP)
+                hostname: rancher.example.com
                 replicas: 1
                 global.cattle.psp.enabled: "false"
-                bootstrapPassword: {{ .Values.global.bootstrapPassword }}
+                # REQUIRED: Set your initial admin password
+                bootstrapPassword: admin
               helmVersion: v3
-
-

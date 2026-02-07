@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(kubectl:*)",
+      "Bash(helm:*)",
+      "Bash(yq:*)",
+      "Bash(vcluster:*)",
+      "WebFetch(domain:www.vcluster.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:rancher.github.io)",
+      "WebFetch(domain:docs.harvesterhci.io)",
+      "WebFetch(domain:charts.loft.sh)",
+      "WebSearch"
+    ],
+    "deny": []
+  }
+}

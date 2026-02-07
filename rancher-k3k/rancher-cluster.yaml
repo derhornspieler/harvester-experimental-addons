@@ -1,0 +1,57 @@
+---
+# k3k Virtual Cluster for Rancher
+# Apply this after the k3k-controller addon is enabled and running.
+#
+# IMPORTANT: k3k does NOT support embedded manifests like vCluster.
+# After the cluster is ready, you must manually deploy Rancher.
+# See the post-install/ directory for manifests.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k3k-rancher
+---
+apiVersion: k3k.io/v1beta1
+kind: Cluster
+metadata:
+  name: rancher
+  namespace: k3k-rancher
+spec:
+  # Cluster mode: "shared" (default) or "virtual"
+  # - shared: optimizes resource usage, pods share host kernel
+  # - virtual: complete isolation with dedicated K3s server pods
+  mode: virtual
+
+  # Number of K3s server nodes (control plane)
+  servers: 1
+
+  # Number of K3s agent nodes (workers) - only used in virtual mode
+  agents: 0
+
+  # Kubernetes version (defaults to host cluster version if not specified)
+  # version: v1.31.4+k3s1
+
+  # Pod/Service CIDR ranges (defaults shown below)
+  # clusterCIDR: 10.52.0.0/16
+  # serviceCIDR: 10.53.0.0/16
+
+  # Persistence configuration for cluster data
+  persistence:
+    type: dynamic
+    # storageClassName: longhorn  # Use your default storage class
+
+  # Expose the cluster API
+  expose:
+    ingress:
+      enabled: true
+      # ingressClassName: nginx
+      # annotations:
+      #   cert-manager.io/cluster-issuer: letsencrypt-prod
+
+  # Additional K3s server arguments
+  # serverArgs:
+  #   - "--disable=traefik"
+
+  # Node selector for placing k3k pods
+  # nodeSelector:
+  #   node-role.kubernetes.io/worker: "true"
