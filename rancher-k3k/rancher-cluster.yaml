@@ -1,10 +1,9 @@
 ---
 # k3k Virtual Cluster for Rancher
-# Apply this after the k3k-controller addon is enabled and running.
+# Apply this after the k3k controller is running.
 #
 # IMPORTANT: k3k does NOT support embedded manifests like vCluster.
-# After the cluster is ready, you must manually deploy Rancher.
-# See the post-install/ directory for manifests.
+# After the cluster is ready, deploy Rancher using the post-install/ manifests.
 ---
 apiVersion: v1
 kind: Namespace
@@ -17,41 +16,23 @@ metadata:
   name: rancher
   namespace: k3k-rancher
 spec:
-  # Cluster mode: "shared" (default) or "virtual"
-  # - shared: optimizes resource usage, pods share host kernel
-  # - virtual: complete isolation with dedicated K3s server pods
+  # Virtual mode: complete isolation with dedicated K3s server pods
   mode: virtual
 
-  # Number of K3s server nodes (control plane)
+  # Single server node
   servers: 1
-
-  # Number of K3s agent nodes (workers) - only used in virtual mode
   agents: 0
 
-  # Kubernetes version (defaults to host cluster version if not specified)
-  # version: v1.31.4+k3s1
+  # Use distinct CIDRs to avoid conflict with host cluster (10.52.0.0/16, 10.53.0.0/16)
+  clusterCIDR: 10.42.0.0/16
+  serviceCIDR: 10.43.0.0/16
 
-  # Pod/Service CIDR ranges (defaults shown below)
-  # clusterCIDR: 10.52.0.0/16
-  # serviceCIDR: 10.53.0.0/16
-
-  # Persistence configuration for cluster data
+  # Persist cluster data (10Gi needed for K3s + cert-manager + Rancher images)
   persistence:
     type: dynamic
-    # storageClassName: longhorn  # Use your default storage class
+    storageClassName: harvester-longhorn
+    storageRequestSize: 10Gi
 
-  # Expose the cluster API
+  # Expose cluster API via NodePort
   expose:
-    ingress:
-      enabled: true
-      # ingressClassName: nginx
-      # annotations:
-      #   cert-manager.io/cluster-issuer: letsencrypt-prod
-
-  # Additional K3s server arguments
-  # serverArgs:
-  #   - "--disable=traefik"
-
-  # Node selector for placing k3k pods
-  # nodeSelector:
-  #   node-role.kubernetes.io/worker: "true"
+    nodePort: {}
