@@ -31,7 +31,7 @@ spec:
   # Minimum 10Gi for base Rancher. Increase for monitoring/logging:
   #   50Gi   - Rancher + basic monitoring
   #   200Gi  - Rancher + Prometheus + Grafana + Loki
-  #   500Gi+ - Full observability stack with retention
+  #   500Gi  - Full observability stack with retention
   persistence:
     type: dynamic
     storageClassName: __STORAGE_CLASS__

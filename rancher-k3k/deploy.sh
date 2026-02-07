@@ -74,9 +74,15 @@ echo -e "${CYAN}Storage Configuration:${NC}"
 echo "  10Gi   - Base Rancher (minimum)"
 echo "  50Gi   - Rancher + basic monitoring"
 echo "  200Gi  - Rancher + Prometheus + Grafana + Loki"
-echo "  500Gi+ - Full observability stack with retention"
+echo "  500Gi  - Full observability stack with retention"
 read -rp "PVC size [10Gi]: " PVC_SIZE
 PVC_SIZE="${PVC_SIZE:-10Gi}"
+# Strip trailing + (from help text copy-paste) and validate
+PVC_SIZE="${PVC_SIZE%+}"
+if ! [[ "$PVC_SIZE" =~ ^[0-9]+(Gi|Ti|Mi)$ ]]; then
+    err "Invalid PVC size: $PVC_SIZE (use format like 10Gi, 500Gi, 1Ti)"
+    exit 1
+fi
 
 read -rp "Storage class [harvester-longhorn]: " STORAGE_CLASS
 STORAGE_CLASS="${STORAGE_CLASS:-harvester-longhorn}"
@@ -212,11 +218,20 @@ else
 fi
 
 log "Waiting for k3k cluster to be ready..."
+ATTEMPTS=0
 while true; do
     STATUS=$(kubectl get clusters.k3k.io "$K3K_CLUSTER" -n "$K3K_NS" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
     if [[ "$STATUS" == "Ready" ]]; then
         break
     fi
+    if [[ $ATTEMPTS -ge 60 ]]; then
+        echo ""
+        err "Timed out waiting for k3k cluster (5 minutes). Current status: $STATUS"
+        err "Check: kubectl get clusters.k3k.io $K3K_CLUSTER -n $K3K_NS -o yaml"
+        err "Check: kubectl get pods -n $K3K_NS"
+        exit 1
+    fi
+    ATTEMPTS=$((ATTEMPTS + 1))
     echo -n "."
     sleep 5
 done
@@ -273,8 +288,16 @@ sed -e "s|__CERTMANAGER_REPO__|${CERTMANAGER_REPO}|g" \
     -e "s|__CERTMANAGER_VERSION__|${CERTMANAGER_VERSION}|g" \
     "$SCRIPT_DIR/post-install/01-cert-manager.yaml" | $K3K_CMD apply -f -
 
-log "Waiting for cert-manager pods..."
-sleep 10
+log "Waiting for cert-manager deployment to be created..."
+ATTEMPTS=0
+while ! $K3K_CMD get deploy/cert-manager -n cert-manager &>/dev/null; do
+    if [[ $ATTEMPTS -ge 60 ]]; then
+        err "Timed out waiting for cert-manager deployment to appear"
+        exit 1
+    fi
+    ATTEMPTS=$((ATTEMPTS + 1))
+    sleep 5
+done
 $K3K_CMD wait --for=condition=available deploy/cert-manager -n cert-manager --timeout=300s
 $K3K_CMD wait --for=condition=available deploy/cert-manager-webhook -n cert-manager --timeout=300s
 log "cert-manager is ready"
@@ -302,7 +325,18 @@ fi
 $K3K_CMD apply -f "$RANCHER_MANIFEST"
 rm -f "$RANCHER_MANIFEST"
 
-log "Waiting for Rancher pod to be ready (this may take several minutes)..."
+log "Waiting for Rancher deployment to be created (Helm chart installing)..."
+ATTEMPTS=0
+while ! $K3K_CMD get deploy/rancher -n cattle-system &>/dev/null; do
+    if [[ $ATTEMPTS -ge 90 ]]; then
+        err "Timed out waiting for Rancher deployment to appear"
+        err "Check HelmChart status: kubectl get helmcharts -A"
+        exit 1
+    fi
+    ATTEMPTS=$((ATTEMPTS + 1))
+    sleep 5
+done
+log "Rancher deployment found, waiting for pods to be ready..."
 $K3K_CMD wait --for=condition=available deploy/rancher -n cattle-system --timeout=600s
 log "Rancher is running"
 
