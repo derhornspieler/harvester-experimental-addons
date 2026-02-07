@@ -28,5 +28,7 @@ spec:
     hostname: rancher.example.com
     replicas: 1
     global.cattle.psp.enabled: "false"
+    # Disable Fleet - not usable in North-South boundary where South cannot reach Git
+    features: "fleet=false"
     # REQUIRED: Set your initial admin password
     bootstrapPassword: admin
