@@ -19,32 +19,52 @@ log()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()  { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
-cleanup() {
-    if [[ -n "$KUBECONFIG_FILE" && -f "$KUBECONFIG_FILE" ]]; then
+# Kubeconfig is preserved for the user after successful deployment.
+# Only clean up on failure.
+cleanup_on_error() {
+    if [[ $? -ne 0 && -n "$KUBECONFIG_FILE" && -f "$KUBECONFIG_FILE" ]]; then
         rm -f "$KUBECONFIG_FILE"
     fi
 }
-trap cleanup EXIT
+trap cleanup_on_error EXIT
 
 # --- Prompt for configuration ---
 read -rp "Rancher hostname (e.g. rancher.example.com): " HOSTNAME
 read -rp "Bootstrap password [admin]: " BOOTSTRAP_PW
 BOOTSTRAP_PW="${BOOTSTRAP_PW:-admin}"
 
+# Validate password - Rancher requires at least 12 characters
+if [[ ${#BOOTSTRAP_PW} -lt 12 ]]; then
+    warn "Rancher v2.13+ requires passwords with at least 12 characters."
+    read -rp "Enter a longer password: " BOOTSTRAP_PW
+    if [[ ${#BOOTSTRAP_PW} -lt 12 ]]; then
+        err "Password must be at least 12 characters"
+        exit 1
+    fi
+fi
+
 if [[ -z "$HOSTNAME" ]]; then
     err "Hostname is required"
     exit 1
 fi
 
-# --- Step 1: Install k3k controller ---
-log "Step 1: Installing k3k controller..."
+# --- Step 1: Install k3k controller via Harvester Addon ---
+log "Step 1: Installing k3k controller addon..."
 if kubectl get deploy k3k -n k3k-system &>/dev/null; then
     log "k3k controller already installed, skipping"
 else
-    helm repo add k3k https://rancher.github.io/k3k 2>/dev/null || true
-    helm repo update k3k
-    helm install k3k k3k/k3k --namespace k3k-system --create-namespace --devel
+    kubectl apply -f "$SCRIPT_DIR/k3k-controller.yaml"
+    kubectl patch addon k3k-controller -n k3k-system --type=merge -p '{"spec":{"enabled":true}}'
     log "Waiting for k3k controller..."
+    ATTEMPTS=0
+    while ! kubectl get deploy k3k -n k3k-system &>/dev/null; do
+        if [[ $ATTEMPTS -ge 24 ]]; then
+            err "Timed out waiting for k3k controller deployment"
+            exit 1
+        fi
+        ATTEMPTS=$((ATTEMPTS + 1))
+        sleep 5
+    done
     kubectl wait --for=condition=available deploy/k3k -n k3k-system --timeout=120s
 fi
 
