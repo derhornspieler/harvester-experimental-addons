@@ -2,9 +2,13 @@
 # Deploy Rancher inside the k3k cluster
 # Apply this to the k3k cluster (not the host cluster)
 #
-# CONFIGURE BEFORE APPLYING:
-# - hostname: your Rancher URL (must resolve to Harvester VIP)
-# - bootstrapPassword: initial admin password
+# Placeholders replaced by deploy.sh:
+#   __HOSTNAME__             - Rancher URL
+#   __BOOTSTRAP_PW__         - Initial admin password
+#   __RANCHER_REPO__         - Helm chart repository
+#   __RANCHER_VERSION__      - Rancher chart version
+#   __SYSTEM_REGISTRY__      - Private container registry (optional)
+#   __EXTRA_RANCHER_VALUES__ - Additional Helm set values (optional)
 ---
 apiVersion: v1
 kind: Namespace
@@ -18,17 +22,16 @@ metadata:
   namespace: kube-system
 spec:
   targetNamespace: cattle-system
-  repo: https://releases.rancher.com/server-charts/latest
+  repo: __RANCHER_REPO__
   chart: rancher
-  version: v2.13.0
+  version: __RANCHER_VERSION__
   helmVersion: v3
   set:
-    ingress.tls.source: rancher
-    # REQUIRED: Set to your Rancher hostname
-    hostname: rancher.example.com
+    ingress.tls.source: __TLS_SOURCE__
+    hostname: __HOSTNAME__
     replicas: 1
     global.cattle.psp.enabled: "false"
     # Disable Fleet - not usable in North-South boundary where South cannot reach Git
     features: "fleet=false"
-    # REQUIRED: Set your initial admin password
-    bootstrapPassword: admin
+    bootstrapPassword: __BOOTSTRAP_PW__
+__EXTRA_RANCHER_VALUES__

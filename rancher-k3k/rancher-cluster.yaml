@@ -27,11 +27,15 @@ spec:
   clusterCIDR: 10.42.0.0/16
   serviceCIDR: 10.43.0.0/16
 
-  # Persist cluster data (10Gi needed for K3s + cert-manager + Rancher images)
+  # Persist cluster data
+  # Minimum 10Gi for base Rancher. Increase for monitoring/logging:
+  #   50Gi   - Rancher + basic monitoring
+  #   200Gi  - Rancher + Prometheus + Grafana + Loki
+  #   500Gi+ - Full observability stack with retention
   persistence:
     type: dynamic
-    storageClassName: harvester-longhorn
-    storageRequestSize: 10Gi
+    storageClassName: __STORAGE_CLASS__
+    storageRequestSize: __PVC_SIZE__
 
   # Expose cluster API via NodePort
   expose:

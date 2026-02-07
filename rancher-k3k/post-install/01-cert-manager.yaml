@@ -16,9 +16,9 @@ metadata:
   namespace: kube-system
 spec:
   targetNamespace: cert-manager
-  repo: https://charts.jetstack.io
+  repo: __CERTMANAGER_REPO__
   chart: cert-manager
-  version: v1.17.1
+  version: __CERTMANAGER_VERSION__
   helmVersion: v3
   set:
     crds.enabled: "true"
