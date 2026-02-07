@@ -54,8 +54,8 @@ Or deploy manually - see individual addon READMEs.
 
 ## Key Versions
 
-- vCluster: v0.30.0
-- k3k: v0.2.1 (requires `--devel` flag)
-- Rancher: v2.13.0
-- K3s: v1.31.4-k3s1
-- cert-manager: v1.17.1
+- vCluster: v0.30.0 (incompatible with Harvester v1.6.x)
+- k3k: v1.0.1 (stable)
+- Rancher: v2.13.2
+- K3s: v1.33.5+k3s1
+- cert-manager: v1.18.5

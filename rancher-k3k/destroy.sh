@@ -21,7 +21,7 @@ echo -e "${YELLOW}This will destroy the k3k Rancher deployment.${NC}"
 echo "The following will be removed:"
 echo "  - Host cluster ingress, service, and TLS secret (k3k-rancher namespace)"
 echo "  - k3k virtual cluster and all data inside it"
-echo "  - k3k controller addon"
+echo "  - k3k controller (Helm release)"
 echo "  - k3k-rancher and k3k-system namespaces"
 echo ""
 read -rp "Are you sure? (yes/no): " CONFIRM
@@ -52,16 +52,15 @@ fi
 
 # --- Step 3: Remove k3k controller ---
 log "Removing k3k controller..."
-if kubectl get addon k3k-controller -n k3k-system &>/dev/null; then
-    # Disable Harvester addon first, then delete
+if helm status k3k -n k3k-system &>/dev/null; then
+    helm uninstall k3k -n k3k-system
+    log "  Helm release deleted"
+elif kubectl get addon k3k-controller -n k3k-system &>/dev/null; then
+    # Fallback: installed via Harvester addon
     kubectl patch addon k3k-controller -n k3k-system --type=merge -p '{"spec":{"enabled":false}}' 2>/dev/null || true
     sleep 5
     kubectl delete addon k3k-controller -n k3k-system 2>/dev/null || true
     log "  Harvester addon deleted"
-elif helm status k3k -n k3k-system &>/dev/null; then
-    # Fallback: installed via Helm directly
-    helm uninstall k3k -n k3k-system
-    log "  Helm release deleted"
 else
     warn "  k3k controller not found"
 fi

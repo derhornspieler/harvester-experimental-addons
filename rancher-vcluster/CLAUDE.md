@@ -26,6 +26,6 @@ vCluster 0.20+ has strict Helm schema validation. Custom values like `global.hos
 ## Versions
 
 - vCluster chart: v0.30.0
-- K3s: v1.31.4-k3s1
-- Rancher: v2.13.0
-- cert-manager: v1.17.1
+- K3s: v1.33.5+k3s1
+- Rancher: v2.13.2
+- cert-manager: v1.18.5

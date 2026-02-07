@@ -3,6 +3,7 @@ set -euo pipefail
 
 # Deploy Rancher on Harvester using k3k
 # This script orchestrates the full deployment including TLS cert propagation.
+# Re-running this script with updated versions will upgrade existing components.
 #
 # Supports:
 #   - Custom PVC sizing (10Gi to 1000Gi+)
@@ -10,6 +11,7 @@ set -euo pipefail
 #   - Private container registries
 #   - Private CA certificates
 #   - Custom storage classes
+#   - In-place upgrades (re-run with new versions)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 K3K_NS="k3k-rancher"
@@ -85,14 +87,20 @@ echo -e "${CYAN}Helm Chart Repositories (press Enter for public defaults):${NC}"
 read -rp "cert-manager chart repo [https://charts.jetstack.io]: " CERTMANAGER_REPO
 CERTMANAGER_REPO="${CERTMANAGER_REPO:-https://charts.jetstack.io}"
 
-read -rp "cert-manager version [v1.17.1]: " CERTMANAGER_VERSION
-CERTMANAGER_VERSION="${CERTMANAGER_VERSION:-v1.17.1}"
+read -rp "cert-manager version [v1.18.5]: " CERTMANAGER_VERSION
+CERTMANAGER_VERSION="${CERTMANAGER_VERSION:-v1.18.5}"
 
 read -rp "Rancher chart repo [https://releases.rancher.com/server-charts/latest]: " RANCHER_REPO
 RANCHER_REPO="${RANCHER_REPO:-https://releases.rancher.com/server-charts/latest}"
 
-read -rp "Rancher version [v2.13.0]: " RANCHER_VERSION
-RANCHER_VERSION="${RANCHER_VERSION:-v2.13.0}"
+read -rp "Rancher version [v2.13.2]: " RANCHER_VERSION
+RANCHER_VERSION="${RANCHER_VERSION:-v2.13.2}"
+
+read -rp "k3k chart repo [https://rancher.github.io/k3k]: " K3K_REPO
+K3K_REPO="${K3K_REPO:-https://rancher.github.io/k3k}"
+
+read -rp "k3k version [1.0.1]: " K3K_VERSION
+K3K_VERSION="${K3K_VERSION:-1.0.1}"
 
 # --- Private registry (optional) ---
 echo ""
@@ -133,6 +141,7 @@ echo "  PVC Size:         $PVC_SIZE"
 echo "  Storage Class:    $STORAGE_CLASS"
 echo "  cert-manager:     $CERTMANAGER_REPO ($CERTMANAGER_VERSION)"
 echo "  Rancher:          $RANCHER_REPO ($RANCHER_VERSION)"
+echo "  k3k:              $K3K_REPO ($K3K_VERSION)"
 echo "  TLS Source:       $TLS_SOURCE"
 [[ -n "$PRIVATE_REGISTRY" ]] && echo "  Registry:         $PRIVATE_REGISTRY"
 [[ -n "$PRIVATE_CA_PATH" ]] && echo "  CA Cert:          $PRIVATE_CA_PATH"
@@ -165,27 +174,30 @@ else
 fi
 
 # =============================================================================
-# Step 1: Install k3k controller via Harvester Addon
+# Step 1: Install/upgrade k3k controller via Helm
 # =============================================================================
 echo ""
-log "Step 1/7: Installing k3k controller addon..."
-if kubectl get deploy k3k -n k3k-system &>/dev/null; then
-    log "k3k controller already installed, skipping"
+log "Step 1/7: Installing k3k controller..."
+helm repo add k3k "$K3K_REPO" 2>/dev/null || true
+helm repo update k3k
+if helm status k3k -n k3k-system &>/dev/null; then
+    log "k3k already installed, upgrading to $K3K_VERSION..."
+    helm upgrade k3k k3k/k3k -n k3k-system --version "$K3K_VERSION"
 else
-    kubectl apply -f "$SCRIPT_DIR/k3k-controller.yaml"
-    kubectl patch addon k3k-controller -n k3k-system --type=merge -p '{"spec":{"enabled":true}}'
-    log "Waiting for k3k controller..."
-    ATTEMPTS=0
-    while ! kubectl get deploy k3k -n k3k-system &>/dev/null; do
-        if [[ $ATTEMPTS -ge 24 ]]; then
-            err "Timed out waiting for k3k controller deployment"
-            exit 1
-        fi
-        ATTEMPTS=$((ATTEMPTS + 1))
-        sleep 5
-    done
-    kubectl wait --for=condition=available deploy/k3k -n k3k-system --timeout=120s
+    helm install k3k k3k/k3k -n k3k-system --create-namespace --version "$K3K_VERSION"
 fi
+log "Waiting for k3k controller..."
+ATTEMPTS=0
+while ! kubectl get deploy k3k -n k3k-system &>/dev/null; do
+    if [[ $ATTEMPTS -ge 24 ]]; then
+        err "Timed out waiting for k3k controller deployment"
+        exit 1
+    fi
+    ATTEMPTS=$((ATTEMPTS + 1))
+    sleep 5
+done
+kubectl wait --for=condition=available deploy/k3k -n k3k-system --timeout=120s
+log "k3k controller is ready"
 
 # =============================================================================
 # Step 2: Create k3k virtual cluster
