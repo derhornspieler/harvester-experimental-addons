@@ -19,13 +19,15 @@ kubectl patch addon rancher-vcluster -n rancher-vcluster --type=merge -p '{"spec
 kubectl get addon rancher-vcluster -n rancher-vcluster
 ```
 
-## vCluster 0.30.0 Schema Note
+## vCluster 0.30.0 Configuration
 
-vCluster 0.20+ has strict Helm schema validation. Custom values like `global.hostname` are **not allowed**. Values must be hardcoded directly in `manifestsTemplate`.
+vCluster 0.20+ has strict Helm schema validation. However, `global:` is a standard Helm construct and IS allowed. The official Harvester v1.7.0 addon uses `global.hostname`, `global.rancherVersion`, and `global.bootstrapPassword` which are templated into `manifestsTemplate` via `{{ .Values.global.* }}`.
+
+Requires Harvester v1.7.0+ (v1.6.x webhook required root-level `hostname:` which conflicts with vCluster's schema).
 
 ## Versions
 
 - vCluster chart: v0.30.0
-- K3s: v1.33.5+k3s1
+- K3s: v1.34.2-k3s1
 - Rancher: v2.13.2
 - cert-manager: v1.18.5
