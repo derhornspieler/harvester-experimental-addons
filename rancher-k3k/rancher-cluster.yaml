@@ -1,0 +1,42 @@
+---
+# k3k Virtual Cluster for Rancher
+# Apply this after the k3k controller is running.
+#
+# IMPORTANT: k3k does NOT support embedded manifests like vCluster.
+# After the cluster is ready, deploy Rancher using the post-install/ manifests.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k3k-rancher
+---
+apiVersion: k3k.io/v1beta1
+kind: Cluster
+metadata:
+  name: rancher
+  namespace: k3k-rancher
+spec:
+  # Virtual mode: complete isolation with dedicated K3s server pods
+  mode: virtual
+
+  # Single server node
+  servers: 1
+  agents: 0
+
+  # Use distinct CIDRs to avoid conflict with host cluster (10.52.0.0/16, 10.53.0.0/16)
+  clusterCIDR: 10.42.0.0/16
+  serviceCIDR: 10.43.0.0/16
+
+  # Persist cluster data
+  # Minimum 10Gi for base Rancher. Increase for monitoring/logging:
+  #   50Gi   - Rancher + basic monitoring
+  #   200Gi  - Rancher + Prometheus + Grafana + Loki
+  #   500Gi  - Full observability stack with retention
+  persistence:
+    type: dynamic
+    storageClassName: __STORAGE_CLASS__
+    storageRequestSize: __PVC_SIZE__
+
+  # Expose cluster API via NodePort
+  expose:
+    nodePort: {}
