@@ -19,7 +19,7 @@ err()  { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 echo -e "${YELLOW}This will destroy the k3k Rancher deployment.${NC}"
 echo "The following will be removed:"
-echo "  - Ingress reconciler CronJob, RBAC (k3k-rancher namespace)"
+echo "  - Ingress watcher, reconciler CronJob, RBAC (k3k-rancher namespace)"
 echo "  - Host cluster ingress, service, and TLS secret (k3k-rancher namespace)"
 echo "  - k3k virtual cluster and all data inside it"
 echo "  - k3k controller (Helm release)"
@@ -32,8 +32,9 @@ if [[ "$CONFIRM" != "yes" ]]; then
     exit 0
 fi
 
-# --- Step 1: Remove ingress reconciler ---
-log "Removing ingress reconciler..."
+# --- Step 1: Remove ingress watcher and reconciler ---
+log "Removing ingress watcher and reconciler..."
+kubectl delete deploy ingress-watcher -n "$K3K_NS" 2>/dev/null && log "  Watcher Deployment deleted" || warn "  Watcher Deployment not found"
 kubectl delete cronjob ingress-reconciler -n "$K3K_NS" 2>/dev/null && log "  CronJob deleted" || warn "  CronJob not found"
 kubectl delete rolebinding ingress-reconciler -n "$K3K_NS" 2>/dev/null && log "  RoleBinding deleted" || warn "  RoleBinding not found"
 kubectl delete role ingress-reconciler -n "$K3K_NS" 2>/dev/null && log "  Role deleted" || warn "  Role not found"
