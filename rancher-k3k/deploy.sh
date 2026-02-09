@@ -183,7 +183,7 @@ fi
 # Step 1: Install/upgrade k3k controller via Helm
 # =============================================================================
 echo ""
-log "Step 1/7: Installing k3k controller..."
+log "Step 1/8: Installing k3k controller..."
 helm repo add k3k "$K3K_REPO" 2>/dev/null || true
 helm repo update k3k
 if helm status k3k -n k3k-system &>/dev/null; then
@@ -208,7 +208,7 @@ log "k3k controller is ready"
 # =============================================================================
 # Step 2: Create k3k virtual cluster
 # =============================================================================
-log "Step 2/7: Creating k3k virtual cluster..."
+log "Step 2/8: Creating k3k virtual cluster..."
 if kubectl get clusters.k3k.io "$K3K_CLUSTER" -n "$K3K_NS" &>/dev/null; then
     log "k3k cluster already exists, skipping"
 else
@@ -241,7 +241,7 @@ log "k3k cluster is Ready"
 # =============================================================================
 # Step 3: Extract kubeconfig
 # =============================================================================
-log "Step 3/7: Extracting kubeconfig..."
+log "Step 3/8: Extracting kubeconfig..."
 KUBECONFIG_FILE=$(mktemp)
 
 kubectl get secret "k3k-${K3K_CLUSTER}-kubeconfig" -n "$K3K_NS" \
@@ -282,7 +282,7 @@ fi
 # =============================================================================
 # Step 4: Deploy cert-manager
 # =============================================================================
-log "Step 4/7: Deploying cert-manager..."
+log "Step 4/8: Deploying cert-manager..."
 
 sed -e "s|__CERTMANAGER_REPO__|${CERTMANAGER_REPO}|g" \
     -e "s|__CERTMANAGER_VERSION__|${CERTMANAGER_VERSION}|g" \
@@ -305,7 +305,7 @@ log "cert-manager is ready"
 # =============================================================================
 # Step 5: Deploy Rancher
 # =============================================================================
-log "Step 5/7: Deploying Rancher..."
+log "Step 5/8: Deploying Rancher..."
 
 RANCHER_MANIFEST=$(mktemp)
 sed -e "s|__HOSTNAME__|${HOSTNAME}|g" \
@@ -343,7 +343,7 @@ log "Rancher is running"
 # =============================================================================
 # Step 6: Copy TLS certificate to host cluster
 # =============================================================================
-log "Step 6/7: Copying Rancher TLS certificate to host cluster..."
+log "Step 6/8: Copying Rancher TLS certificate to host cluster..."
 
 ATTEMPTS=0
 while ! $K3K_CMD get secret tls-rancher-ingress -n cattle-system &>/dev/null; do
@@ -367,11 +367,20 @@ log "TLS certificate copied to host cluster"
 # =============================================================================
 # Step 7: Create host ingress
 # =============================================================================
-log "Step 7/7: Creating host cluster ingress..."
+log "Step 7/8: Creating host cluster ingress..."
 
 sed "s|__HOSTNAME__|${HOSTNAME}|g" "$SCRIPT_DIR/host-ingress.yaml" | kubectl apply -f -
 
 log "Host ingress created"
+
+# =============================================================================
+# Step 8: Deploy ingress reconciler
+# =============================================================================
+log "Step 8/8: Deploying ingress reconciler CronJob..."
+
+sed "s|__HOSTNAME__|${HOSTNAME}|g" "$SCRIPT_DIR/ingress-reconciler.yaml" | kubectl apply -f -
+
+log "Ingress reconciler deployed (checks every 5 minutes)"
 
 # =============================================================================
 # Done
