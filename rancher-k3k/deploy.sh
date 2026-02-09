@@ -374,13 +374,15 @@ sed "s|__HOSTNAME__|${HOSTNAME}|g" "$SCRIPT_DIR/host-ingress.yaml" | kubectl app
 log "Host ingress created"
 
 # =============================================================================
-# Step 8: Deploy ingress reconciler
+# Step 8: Deploy ingress reconciler and watcher
 # =============================================================================
-log "Step 8/8: Deploying ingress reconciler CronJob..."
+log "Step 8/8: Deploying ingress reconciler and watcher..."
 
 sed "s|__HOSTNAME__|${HOSTNAME}|g" "$SCRIPT_DIR/ingress-reconciler.yaml" | kubectl apply -f -
+sed "s|__HOSTNAME__|${HOSTNAME}|g" "$SCRIPT_DIR/ingress-watcher.yaml" | kubectl apply -f -
 
-log "Ingress reconciler deployed (checks every 5 minutes)"
+log "Ingress watcher deployed (reacts within 30s of pod restart)"
+log "Ingress reconciler deployed (safety net, checks every 5 minutes)"
 
 # =============================================================================
 # Done
