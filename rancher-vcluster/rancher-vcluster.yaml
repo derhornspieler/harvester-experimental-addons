@@ -18,9 +18,9 @@ spec:
   chart: vcluster
   valuesContent: |-
     global:
-      hostname: "rancher.hvst-vip.aegisgroup.ch"
+      hostname: ""
       rancherVersion: v2.13.2
-      bootstrapPassword: "admin123123!"
+      bootstrapPassword: ""
 
     sync:
       toHost:
