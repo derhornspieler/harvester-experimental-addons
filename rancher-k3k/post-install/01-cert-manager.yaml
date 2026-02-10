@@ -20,5 +20,9 @@ spec:
   chart: cert-manager
   version: __CERTMANAGER_VERSION__
   helmVersion: v3
+__AUTH_SECRET_LINE1__
+__AUTH_SECRET_LINE2__
+__REPO_CA_LINE1__
+__REPO_CA_LINE2__
   set:
     crds.enabled: "true"

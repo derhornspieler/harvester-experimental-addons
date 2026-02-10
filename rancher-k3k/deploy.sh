@@ -37,14 +37,8 @@ cleanup_on_error() {
 }
 trap cleanup_on_error EXIT
 
-# Cross-platform sed -i
-sedi() {
-    if sed --version &>/dev/null 2>&1; then
-        sed -i "$@"
-    else
-        sed -i '' "$@"
-    fi
-}
+# shellcheck source=lib.sh
+source "$SCRIPT_DIR/lib.sh"
 
 # =============================================================================
 # Configuration
@@ -123,6 +117,22 @@ echo "  Used when Helm repos or registries use private certificates."
 read -rp "CA certificate path []: " PRIVATE_CA_PATH
 PRIVATE_CA_PATH="${PRIVATE_CA_PATH:-}"
 
+# --- Helm repo authentication (optional) ---
+echo ""
+echo -e "${CYAN}Helm Repository Authentication (press Enter to skip):${NC}"
+echo "  Required for private Harbor/Artifactory/Nexus repos."
+read -rp "Helm repo username []: " HELM_REPO_USER
+HELM_REPO_USER="${HELM_REPO_USER:-}"
+HELM_REPO_PASS=""
+if [[ -n "$HELM_REPO_USER" ]]; then
+    read -rsp "Helm repo password: " HELM_REPO_PASS
+    echo ""
+    if [[ -z "$HELM_REPO_PASS" ]]; then
+        err "Password is required when username is set"
+        exit 1
+    fi
+fi
+
 # --- TLS source ---
 echo ""
 echo -e "${CYAN}TLS Certificate Source:${NC}"
@@ -151,6 +161,7 @@ echo "  k3k:              $K3K_REPO ($K3K_VERSION)"
 echo "  TLS Source:       $TLS_SOURCE"
 [[ -n "$PRIVATE_REGISTRY" ]] && echo "  Registry:         $PRIVATE_REGISTRY"
 [[ -n "$PRIVATE_CA_PATH" ]] && echo "  CA Cert:          $PRIVATE_CA_PATH"
+[[ -n "$HELM_REPO_USER" ]] && echo "  Helm Auth:        $HELM_REPO_USER / ****"
 echo ""
 read -rp "Proceed? (yes/no) [yes]: " CONFIRM
 CONFIRM="${CONFIRM:-yes}"
@@ -158,6 +169,12 @@ if [[ "$CONFIRM" != "yes" ]]; then
     log "Aborted."
     exit 0
 fi
+
+# =============================================================================
+# Build Helm flags for private repos
+# =============================================================================
+build_helm_repo_flags
+build_helm_ca_flags
 
 # =============================================================================
 # Build extra Rancher values
@@ -184,13 +201,17 @@ fi
 # =============================================================================
 echo ""
 log "Step 1/8: Installing k3k controller..."
-helm repo add k3k "$K3K_REPO" 2>/dev/null || true
+if ! helm repo add k3k "$K3K_REPO" --force-update ${HELM_REPO_FLAGS[@]+"${HELM_REPO_FLAGS[@]}"}; then
+    err "Failed to add k3k Helm repo: $K3K_REPO"
+    err "Check the URL, credentials, and CA certificate settings"
+    exit 1
+fi
 helm repo update k3k
 if helm status k3k -n k3k-system &>/dev/null; then
     log "k3k already installed, upgrading to $K3K_VERSION..."
-    helm upgrade k3k k3k/k3k -n k3k-system --version "$K3K_VERSION"
+    helm upgrade k3k k3k/k3k -n k3k-system --version "$K3K_VERSION" ${HELM_CA_FLAGS[@]+"${HELM_CA_FLAGS[@]}"}
 else
-    helm install k3k k3k/k3k -n k3k-system --create-namespace --version "$K3K_VERSION"
+    helm install k3k k3k/k3k -n k3k-system --create-namespace --version "$K3K_VERSION" ${HELM_CA_FLAGS[@]+"${HELM_CA_FLAGS[@]}"}
 fi
 log "Waiting for k3k controller..."
 ATTEMPTS=0
@@ -280,13 +301,38 @@ if [[ -n "$PRIVATE_CA_PATH" ]]; then
 fi
 
 # =============================================================================
+# Step 3.6 (optional): Create in-cluster auth for HelmChart CRs
+# =============================================================================
+if [[ -n "$HELM_REPO_USER" ]]; then
+    log "Creating Helm repo auth secret in k3k cluster..."
+    $K3K_CMD -n kube-system create secret generic helm-repo-auth \
+        --type=kubernetes.io/basic-auth \
+        --from-literal=username="$HELM_REPO_USER" \
+        --from-literal=password="$HELM_REPO_PASS" \
+        --dry-run=client -o yaml | $K3K_CMD apply -f -
+    log "Helm repo auth secret created"
+fi
+
+if [[ -n "$PRIVATE_CA_PATH" ]]; then
+    log "Creating Helm repo CA configmap in k3k cluster..."
+    $K3K_CMD -n kube-system create configmap helm-repo-ca \
+        --from-file=ca-bundle.crt="$PRIVATE_CA_PATH" \
+        --dry-run=client -o yaml | $K3K_CMD apply -f -
+    log "Helm repo CA configmap created"
+fi
+
+# =============================================================================
 # Step 4: Deploy cert-manager
 # =============================================================================
 log "Step 4/8: Deploying cert-manager..."
 
+CERTMANAGER_MANIFEST=$(mktemp)
 sed -e "s|__CERTMANAGER_REPO__|${CERTMANAGER_REPO}|g" \
     -e "s|__CERTMANAGER_VERSION__|${CERTMANAGER_VERSION}|g" \
-    "$SCRIPT_DIR/post-install/01-cert-manager.yaml" | $K3K_CMD apply -f -
+    "$SCRIPT_DIR/post-install/01-cert-manager.yaml" > "$CERTMANAGER_MANIFEST"
+inject_helmchart_auth "$CERTMANAGER_MANIFEST"
+$K3K_CMD apply -f "$CERTMANAGER_MANIFEST"
+rm -f "$CERTMANAGER_MANIFEST"
 
 log "Waiting for cert-manager deployment to be created..."
 ATTEMPTS=0
@@ -321,6 +367,9 @@ if [[ -n "$EXTRA_RANCHER_VALUES" ]]; then
 else
     sedi "/__EXTRA_RANCHER_VALUES__/d" "$RANCHER_MANIFEST"
 fi
+
+# Inject HelmChart auth/CA references
+inject_helmchart_auth "$RANCHER_MANIFEST"
 
 $K3K_CMD apply -f "$RANCHER_MANIFEST"
 rm -f "$RANCHER_MANIFEST"
