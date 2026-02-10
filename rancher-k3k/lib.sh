@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 # Shared functions for rancher-k3k deploy scripts
+#
+# Functions:
+#   sedi                  - Cross-platform sed -i
+#   build_helm_repo_flags - Populate HELM_REPO_FLAGS array
+#   build_helm_ca_flags   - Populate HELM_CA_FLAGS array
+#   inject_helmchart_auth - Replace auth/CA placeholders in HelmChart CRs
+#   build_registries_yaml - Generate K3s registries.yaml for Harbor proxy caches
+#   inject_secret_mounts  - Replace secretMounts/serverArgs placeholders in Cluster CR
 
 # Cross-platform sed -i
 sedi() {
@@ -56,5 +64,122 @@ inject_helmchart_auth() {
     else
         sedi "/__REPO_CA_LINE1__/d" "$file"
         sedi "/__REPO_CA_LINE2__/d" "$file"
+    fi
+}
+
+# Generate a K3s registries.yaml for Harbor proxy caches.
+# Writes the YAML to the file path given as the first argument.
+#
+# The registry URL is expected in Harbor proxy cache format:
+#   <host>/<project>  (e.g. harbor.tiger.net/docker.io)
+#
+# This generates a containerd mirror config that rewrites docker.io pulls
+# to go through the Harbor proxy cache project.
+#
+# Usage: build_registries_yaml <output-file>
+# Reads: PRIVATE_REGISTRY, PRIVATE_CA_PATH, HELM_REPO_USER, HELM_REPO_PASS
+build_registries_yaml() {
+    local outfile="$1"
+    local registry="${PRIVATE_REGISTRY:-}"
+
+    if [[ -z "$registry" ]]; then
+        return 1
+    fi
+
+    # Split registry into host and project path
+    # e.g. "harbor.tiger.net/docker.io" → host="harbor.tiger.net" project="docker.io"
+    local reg_host reg_project
+    reg_host="${registry%%/*}"
+    reg_project="${registry#*/}"
+
+    # If no slash in the URL, there's no project path — use as-is
+    if [[ "$reg_host" == "$reg_project" ]]; then
+        reg_project=""
+    fi
+
+    cat > "$outfile" <<REGEOF
+mirrors:
+  docker.io:
+    endpoint:
+      - "https://${reg_host}"
+REGEOF
+
+    # Add rewrite rule if there's a project path (e.g. docker.io)
+    if [[ -n "$reg_project" ]]; then
+        cat >> "$outfile" <<REGEOF
+    rewrite:
+      "^(.*)$": "${reg_project}/\$1"
+REGEOF
+    fi
+
+    # Add configs section for TLS and/or auth
+    if [[ -n "${PRIVATE_CA_PATH:-}" || -n "${HELM_REPO_USER:-}" ]]; then
+        cat >> "$outfile" <<REGEOF
+configs:
+  "${reg_host}":
+REGEOF
+
+        if [[ -n "${PRIVATE_CA_PATH:-}" ]]; then
+            cat >> "$outfile" <<REGEOF
+    tls:
+      ca_file: /etc/rancher/k3s/tls/ca.crt
+REGEOF
+        fi
+
+        if [[ -n "${HELM_REPO_USER:-}" ]]; then
+            cat >> "$outfile" <<REGEOF
+    auth:
+      username: "${HELM_REPO_USER}"
+      password: "${HELM_REPO_PASS}"
+REGEOF
+        fi
+    fi
+}
+
+# Replace secretMounts and extra serverArgs placeholders in a Cluster CR manifest.
+# If PRIVATE_REGISTRY is set, injects secretMounts for registries.yaml (and optionally CA).
+# If PRIVATE_REGISTRY is set, injects --system-default-registry serverArg.
+# Otherwise removes the placeholders.
+#
+# Usage: inject_secret_mounts <manifest-file>
+# Reads: PRIVATE_REGISTRY, PRIVATE_CA_PATH
+inject_secret_mounts() {
+    local file="$1"
+
+    if [[ -n "${PRIVATE_REGISTRY:-}" ]]; then
+        # Build the secretMounts block in a temp file
+        local mounts_file
+        mounts_file=$(mktemp)
+        {
+            echo "  secretMounts:"
+            echo "    - secretName: k3s-registry-config"
+            echo "      mountPath: /etc/rancher/k3s/registries.yaml"
+            echo "      subPath: registries.yaml"
+            if [[ -n "${PRIVATE_CA_PATH:-}" ]]; then
+                echo "    - secretName: k3s-registry-ca"
+                echo "      mountPath: /etc/rancher/k3s/tls/ca.crt"
+                echo "      subPath: ca.crt"
+            fi
+        } > "$mounts_file"
+
+        # Replace __SECRET_MOUNTS__ with the contents of mounts_file
+        # Use line-by-line approach for macOS/Linux portability
+        local tmpfile
+        tmpfile=$(mktemp)
+        while IFS= read -r line; do
+            if [[ "$line" == *"__SECRET_MOUNTS__"* ]]; then
+                cat "$mounts_file"
+            else
+                printf '%s\n' "$line"
+            fi
+        done < "$file" > "$tmpfile"
+        mv "$tmpfile" "$file"
+        rm -f "$mounts_file"
+
+        # Inject --system-default-registry serverArg
+        sedi "s|^__EXTRA_SERVER_ARGS__$|    - \"--system-default-registry=${PRIVATE_REGISTRY}\"|" "$file"
+    else
+        sedi "/__SECRET_MOUNTS__/d" "$file"
+        sedi "/__EXTRA_SERVER_ARGS__/d" "$file"
     fi
 }

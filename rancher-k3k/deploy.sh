@@ -105,7 +105,8 @@ K3K_VERSION="${K3K_VERSION:-1.0.1}"
 # --- Private registry (optional) ---
 echo ""
 echo -e "${CYAN}Private Container Registry (press Enter to skip):${NC}"
-echo "  Example: registry.example.com:5000"
+echo "  For Harbor proxy caches, use: harbor.example.com/docker.io"
+echo "  This configures K3s containerd to mirror docker.io through your registry."
 read -rp "Private registry URL []: " PRIVATE_REGISTRY
 PRIVATE_REGISTRY="${PRIVATE_REGISTRY:-}"
 
@@ -227,15 +228,48 @@ kubectl wait --for=condition=available deploy/k3k -n k3k-system --timeout=120s
 log "k3k controller is ready"
 
 # =============================================================================
+# Step 1.5 (optional): Create registry config Secrets for k3k cluster
+# =============================================================================
+if [[ -n "$PRIVATE_REGISTRY" ]]; then
+    log "Creating K3s registry config for k3k cluster..."
+
+    # Ensure namespace exists before creating Secrets
+    kubectl create namespace "$K3K_NS" --dry-run=client -o yaml | kubectl apply -f -
+
+    # Generate and store registries.yaml
+    REGISTRIES_FILE=$(mktemp)
+    build_registries_yaml "$REGISTRIES_FILE"
+    log "Generated registries.yaml:"
+    cat "$REGISTRIES_FILE" | while IFS= read -r line; do echo "    $line"; done
+    kubectl -n "$K3K_NS" create secret generic k3s-registry-config \
+        --from-file=registries.yaml="$REGISTRIES_FILE" \
+        --dry-run=client -o yaml | kubectl apply -f -
+    rm -f "$REGISTRIES_FILE"
+
+    # Store CA cert if provided
+    if [[ -n "$PRIVATE_CA_PATH" ]]; then
+        kubectl -n "$K3K_NS" create secret generic k3s-registry-ca \
+            --from-file=ca.crt="$PRIVATE_CA_PATH" \
+            --dry-run=client -o yaml | kubectl apply -f -
+    fi
+
+    log "Registry config Secrets created in $K3K_NS"
+fi
+
+# =============================================================================
 # Step 2: Create k3k virtual cluster
 # =============================================================================
 log "Step 2/8: Creating k3k virtual cluster..."
 if kubectl get clusters.k3k.io "$K3K_CLUSTER" -n "$K3K_NS" &>/dev/null; then
     log "k3k cluster already exists, skipping"
 else
+    CLUSTER_MANIFEST=$(mktemp)
     sed -e "s|__PVC_SIZE__|${PVC_SIZE}|g" \
         -e "s|__STORAGE_CLASS__|${STORAGE_CLASS}|g" \
-        "$SCRIPT_DIR/rancher-cluster.yaml" | kubectl apply -f -
+        "$SCRIPT_DIR/rancher-cluster.yaml" > "$CLUSTER_MANIFEST"
+    inject_secret_mounts "$CLUSTER_MANIFEST"
+    kubectl apply -f "$CLUSTER_MANIFEST"
+    rm -f "$CLUSTER_MANIFEST"
 fi
 
 log "Waiting for k3k cluster to be ready..."

@@ -211,9 +211,24 @@ The CA is propagated to:
 
 ### Private Container Registry
 
-Enter the registry URL (e.g. `registry.example.com:5000`) when prompted.
-This sets Rancher's `systemDefaultRegistry` so all images are pulled from
-your mirror.
+Enter the registry URL when prompted. For Harbor proxy caches, use the
+format `harbor.example.com/docker.io` where `docker.io` is the proxy cache
+project name.
+
+The script configures three layers of registry support:
+
+1. **K3s containerd mirrors** (`spec.secretMounts`): A `registries.yaml` is
+   generated and mounted into the k3k virtual cluster pod at
+   `/etc/rancher/k3s/registries.yaml`. This tells containerd to pull all
+   `docker.io` images through your Harbor proxy cache, with optional TLS CA
+   and auth. The rewrite rule maps `image:tag` to `<project>/image:tag`.
+
+2. **K3s system images** (`--system-default-registry`): Added to
+   `spec.serverArgs` so K3s system components (CoreDNS, metrics-server, etc.)
+   are pulled from your registry.
+
+3. **Rancher images** (`systemDefaultRegistry`): Set in the Rancher HelmChart
+   CR so Rancher prepends your registry to all its image references.
 
 ### Testing
 

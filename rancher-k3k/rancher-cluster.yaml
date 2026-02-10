@@ -44,7 +44,9 @@ spec:
   # See: https://github.com/rancher/k3k/issues/657
   serverArgs:
     - "--disable-network-policy"
+__EXTRA_SERVER_ARGS__
 
+__SECRET_MOUNTS__
   # Expose cluster API via NodePort
   expose:
     nodePort: {}
