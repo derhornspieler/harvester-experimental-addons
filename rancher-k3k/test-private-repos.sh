@@ -276,6 +276,204 @@ else
     skip "helm repo add with auth" "helm not installed"
 fi
 
+# --- Test 10: build_registries_yaml with Harbor host + auth + CA ---
+echo ""
+echo "Test 10: build_registries_yaml with Harbor host (multi-registry mirrors)"
+PRIVATE_REGISTRY="harbor.example.com" PRIVATE_CA_PATH="/tmp/fake-ca.pem"
+HELM_REPO_USER="testuser" HELM_REPO_PASS="testpass"
+REGISTRY_FILE="$TMPDIR_TEST/registries.yaml"
+build_registries_yaml "$REGISTRY_FILE"
+
+if validate_yaml "$REGISTRY_FILE" >/dev/null 2>&1; then
+    pass "Valid YAML"
+else
+    fail "Valid YAML" "$(validate_yaml "$REGISTRY_FILE" 2>&1)"
+fi
+
+if yaml_contains "docker.io:" "$REGISTRY_FILE"; then
+    pass "docker.io mirror present"
+else
+    fail "docker.io mirror" "docker.io mirror entry not found"
+fi
+
+if yaml_contains "quay.io:" "$REGISTRY_FILE"; then
+    pass "quay.io mirror present"
+else
+    fail "quay.io mirror" "quay.io mirror entry not found"
+fi
+
+if yaml_contains "ghcr.io:" "$REGISTRY_FILE"; then
+    pass "ghcr.io mirror present"
+else
+    fail "ghcr.io mirror" "ghcr.io mirror entry not found"
+fi
+
+if yaml_contains "https://harbor.example.com" "$REGISTRY_FILE"; then
+    pass "Endpoint points to Harbor host"
+else
+    fail "Endpoint" "Expected https://harbor.example.com"
+fi
+
+# Verify rewrite rules route to correct Harbor projects
+if yaml_contains 'docker.io/' "$REGISTRY_FILE" && \
+   yaml_contains 'quay.io/' "$REGISTRY_FILE" && \
+   yaml_contains 'ghcr.io/' "$REGISTRY_FILE"; then
+    pass "Rewrite rules map to Harbor proxy cache projects"
+else
+    fail "Rewrite rules" "Expected rewrite with docker.io/, quay.io/, ghcr.io/ prefixes"
+fi
+
+if yaml_contains "ca_file:" "$REGISTRY_FILE"; then
+    pass "CA file configured"
+else
+    fail "CA file" "Expected tls.ca_file"
+fi
+
+if yaml_contains "username:" "$REGISTRY_FILE" && yaml_contains "password:" "$REGISTRY_FILE"; then
+    pass "Auth credentials present"
+else
+    fail "Auth" "Expected auth username/password"
+fi
+
+# --- Test 11: build_registries_yaml without CA or auth ---
+echo ""
+echo "Test 11: build_registries_yaml without CA or auth"
+PRIVATE_REGISTRY="registry.example.com:5000" PRIVATE_CA_PATH="" HELM_REPO_USER="" HELM_REPO_PASS=""
+build_registries_yaml "$TMPDIR_TEST/registries-plain.yaml"
+
+if validate_yaml "$TMPDIR_TEST/registries-plain.yaml" >/dev/null 2>&1; then
+    pass "Valid YAML"
+else
+    fail "Valid YAML" "$(validate_yaml "$TMPDIR_TEST/registries-plain.yaml" 2>&1)"
+fi
+
+if yaml_contains "https://registry.example.com:5000" "$TMPDIR_TEST/registries-plain.yaml"; then
+    pass "Endpoint uses full host:port"
+else
+    fail "Endpoint" "Expected https://registry.example.com:5000"
+fi
+
+# All three upstream registries should still have mirror entries
+if yaml_contains "docker.io:" "$TMPDIR_TEST/registries-plain.yaml" && \
+   yaml_contains "quay.io:" "$TMPDIR_TEST/registries-plain.yaml" && \
+   yaml_contains "ghcr.io:" "$TMPDIR_TEST/registries-plain.yaml"; then
+    pass "All three upstream mirrors present"
+else
+    fail "Upstream mirrors" "Expected docker.io, quay.io, ghcr.io mirror entries"
+fi
+
+if yaml_not_contains "configs:" "$TMPDIR_TEST/registries-plain.yaml"; then
+    pass "No configs section (no CA, no auth)"
+else
+    fail "No configs" "configs section should not be present without CA or auth"
+fi
+
+# --- Test 12: inject_secret_mounts with private registry + CA ---
+echo ""
+echo "Test 12: inject_secret_mounts with private registry + CA"
+PRIVATE_REGISTRY="harbor.example.com" PRIVATE_CA_PATH="/tmp/fake-ca.pem"
+cp "$SCRIPT_DIR/rancher-cluster.yaml" "$TMPDIR_TEST/cluster-registry.yaml"
+sedi "s|__PVC_SIZE__|10Gi|g" "$TMPDIR_TEST/cluster-registry.yaml"
+sedi "s|__STORAGE_CLASS__|harvester-longhorn|g" "$TMPDIR_TEST/cluster-registry.yaml"
+inject_secret_mounts "$TMPDIR_TEST/cluster-registry.yaml"
+
+if validate_yaml "$TMPDIR_TEST/cluster-registry.yaml" >/dev/null 2>&1; then
+    pass "Valid YAML"
+else
+    fail "Valid YAML" "$(validate_yaml "$TMPDIR_TEST/cluster-registry.yaml" 2>&1)"
+fi
+
+if yaml_contains "secretMounts:" "$TMPDIR_TEST/cluster-registry.yaml"; then
+    pass "secretMounts present"
+else
+    fail "secretMounts" "secretMounts block not found"
+fi
+
+if yaml_contains "k3s-registry-config" "$TMPDIR_TEST/cluster-registry.yaml"; then
+    pass "Registry config secret referenced"
+else
+    fail "Registry config" "k3s-registry-config not found"
+fi
+
+if yaml_contains "k3s-registry-ca" "$TMPDIR_TEST/cluster-registry.yaml"; then
+    pass "Registry CA secret referenced"
+else
+    fail "Registry CA" "k3s-registry-ca not found"
+fi
+
+if yaml_contains "registries.yaml" "$TMPDIR_TEST/cluster-registry.yaml"; then
+    pass "registries.yaml mountPath/subPath present"
+else
+    fail "registries.yaml" "registries.yaml mount not found"
+fi
+
+if yaml_contains "system-default-registry=harbor.example.com/docker.io" "$TMPDIR_TEST/cluster-registry.yaml"; then
+    pass "--system-default-registry=harbor.example.com/docker.io injected"
+else
+    fail "--system-default-registry" "Expected harbor.example.com/docker.io in serverArg"
+fi
+
+# --- Test 13: inject_secret_mounts without private registry ---
+echo ""
+echo "Test 13: inject_secret_mounts without private registry (public)"
+PRIVATE_REGISTRY="" PRIVATE_CA_PATH=""
+cp "$SCRIPT_DIR/rancher-cluster.yaml" "$TMPDIR_TEST/cluster-public.yaml"
+sedi "s|__PVC_SIZE__|10Gi|g" "$TMPDIR_TEST/cluster-public.yaml"
+sedi "s|__STORAGE_CLASS__|harvester-longhorn|g" "$TMPDIR_TEST/cluster-public.yaml"
+inject_secret_mounts "$TMPDIR_TEST/cluster-public.yaml"
+
+if validate_yaml "$TMPDIR_TEST/cluster-public.yaml" >/dev/null 2>&1; then
+    pass "Valid YAML"
+else
+    fail "Valid YAML" "$(validate_yaml "$TMPDIR_TEST/cluster-public.yaml" 2>&1)"
+fi
+
+if yaml_not_contains "secretMounts:" "$TMPDIR_TEST/cluster-public.yaml"; then
+    pass "No secretMounts (public)"
+else
+    fail "No secretMounts" "secretMounts should not be present for public registries"
+fi
+
+if yaml_not_contains "system-default-registry" "$TMPDIR_TEST/cluster-public.yaml"; then
+    pass "No --system-default-registry (public)"
+else
+    fail "No --system-default-registry" "serverArg should not be present for public"
+fi
+
+# Check no unresolved placeholders in non-comment lines
+if ! grep -v '^#' "$TMPDIR_TEST/cluster-public.yaml" | grep -q '__'; then
+    pass "All placeholders cleaned"
+else
+    fail "Placeholders cleaned" "Unresolved placeholders remain"
+fi
+
+# --- Test 14: inject_secret_mounts with registry but no CA ---
+echo ""
+echo "Test 14: inject_secret_mounts with registry, no CA"
+PRIVATE_REGISTRY="registry.example.com" PRIVATE_CA_PATH=""
+cp "$SCRIPT_DIR/rancher-cluster.yaml" "$TMPDIR_TEST/cluster-noca.yaml"
+sedi "s|__PVC_SIZE__|10Gi|g" "$TMPDIR_TEST/cluster-noca.yaml"
+sedi "s|__STORAGE_CLASS__|harvester-longhorn|g" "$TMPDIR_TEST/cluster-noca.yaml"
+inject_secret_mounts "$TMPDIR_TEST/cluster-noca.yaml"
+
+if validate_yaml "$TMPDIR_TEST/cluster-noca.yaml" >/dev/null 2>&1; then
+    pass "Valid YAML"
+else
+    fail "Valid YAML" "$(validate_yaml "$TMPDIR_TEST/cluster-noca.yaml" 2>&1)"
+fi
+
+if yaml_contains "k3s-registry-config" "$TMPDIR_TEST/cluster-noca.yaml"; then
+    pass "Registry config secret referenced"
+else
+    fail "Registry config" "k3s-registry-config not found"
+fi
+
+if yaml_not_contains "k3s-registry-ca" "$TMPDIR_TEST/cluster-noca.yaml"; then
+    pass "No CA secret (not needed)"
+else
+    fail "No CA secret" "k3s-registry-ca should not be present without CA"
+fi
+
 # =============================================================================
 # Tier 2: Local HTTPS Server (optional)
 # =============================================================================

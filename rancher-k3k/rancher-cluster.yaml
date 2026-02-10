@@ -23,7 +23,7 @@ spec:
   servers: 1
   agents: 0
 
-  # Use distinct CIDRs to avoid conflict with host cluster (10.52.0.0/16, 10.53.0.0/16)
+  # Use distinct CIDRs to avoid conflict with host cluster
   clusterCIDR: 10.42.0.0/16
   serviceCIDR: 10.43.0.0/16
 
@@ -37,6 +37,16 @@ spec:
     storageClassName: __STORAGE_CLASS__
     storageRequestSize: __PVC_SIZE__
 
+  # Disable the network policy controller to prevent flannel crash on pod reschedule.
+  # When the k3k server pod moves to a different node, flannel's network policy
+  # controller reads stale node IP from etcd and crashes. This flag disables only
+  # the policy controller — flannel itself still works for pod networking.
+  # See: https://github.com/rancher/k3k/issues/657
+  serverArgs:
+    - "--disable-network-policy"
+__EXTRA_SERVER_ARGS__
+
+__SECRET_MOUNTS__
   # Expose cluster API via NodePort
   expose:
     nodePort: {}

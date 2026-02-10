@@ -105,8 +105,10 @@ K3K_VERSION="${K3K_VERSION:-1.0.1}"
 # --- Private registry (optional) ---
 echo ""
 echo -e "${CYAN}Private Container Registry (press Enter to skip):${NC}"
-echo "  Example: registry.example.com:5000"
-read -rp "Private registry URL []: " PRIVATE_REGISTRY
+echo "  Enter the registry host (e.g. harbor.example.com)."
+echo "  Containerd mirrors are generated for: docker.io, quay.io, ghcr.io"
+echo "  Each requires a matching proxy cache project in Harbor."
+read -rp "Private registry host []: " PRIVATE_REGISTRY
 PRIVATE_REGISTRY="${PRIVATE_REGISTRY:-}"
 
 # --- Private CA certificate (optional) ---
@@ -159,7 +161,7 @@ echo "  cert-manager:     $CERTMANAGER_REPO ($CERTMANAGER_VERSION)"
 echo "  Rancher:          $RANCHER_REPO ($RANCHER_VERSION)"
 echo "  k3k:              $K3K_REPO ($K3K_VERSION)"
 echo "  TLS Source:       $TLS_SOURCE"
-[[ -n "$PRIVATE_REGISTRY" ]] && echo "  Registry:         $PRIVATE_REGISTRY"
+[[ -n "$PRIVATE_REGISTRY" ]] && echo "  Registry:         $PRIVATE_REGISTRY (mirrors: docker.io, quay.io, ghcr.io)"
 [[ -n "$PRIVATE_CA_PATH" ]] && echo "  CA Cert:          $PRIVATE_CA_PATH"
 [[ -n "$HELM_REPO_USER" ]] && echo "  Helm Auth:        $HELM_REPO_USER / ****"
 echo ""
@@ -182,7 +184,8 @@ build_helm_ca_flags
 EXTRA_RANCHER_VALUES=""
 
 if [[ -n "$PRIVATE_REGISTRY" ]]; then
-    EXTRA_RANCHER_VALUES="${EXTRA_RANCHER_VALUES}    systemDefaultRegistry: \"${PRIVATE_REGISTRY}\"\n"
+    # Rancher images are all on docker.io, so systemDefaultRegistry needs host/docker.io
+    EXTRA_RANCHER_VALUES="${EXTRA_RANCHER_VALUES}    systemDefaultRegistry: \"${PRIVATE_REGISTRY}/docker.io\"\n"
 fi
 
 if [[ -n "$PRIVATE_CA_PATH" ]]; then
@@ -200,7 +203,7 @@ fi
 # Step 1: Install/upgrade k3k controller via Helm
 # =============================================================================
 echo ""
-log "Step 1/7: Installing k3k controller..."
+log "Step 1/8: Installing k3k controller..."
 if ! helm repo add k3k "$K3K_REPO" --force-update ${HELM_REPO_FLAGS[@]+"${HELM_REPO_FLAGS[@]}"}; then
     err "Failed to add k3k Helm repo: $K3K_REPO"
     err "Check the URL, credentials, and CA certificate settings"
@@ -227,15 +230,48 @@ kubectl wait --for=condition=available deploy/k3k -n k3k-system --timeout=120s
 log "k3k controller is ready"
 
 # =============================================================================
+# Step 1.5 (optional): Create registry config Secrets for k3k cluster
+# =============================================================================
+if [[ -n "$PRIVATE_REGISTRY" ]]; then
+    log "Creating K3s registry config for k3k cluster..."
+
+    # Ensure namespace exists before creating Secrets
+    kubectl create namespace "$K3K_NS" --dry-run=client -o yaml | kubectl apply -f -
+
+    # Generate and store registries.yaml
+    REGISTRIES_FILE=$(mktemp)
+    build_registries_yaml "$REGISTRIES_FILE"
+    log "Generated registries.yaml:"
+    cat "$REGISTRIES_FILE" | while IFS= read -r line; do echo "    $line"; done
+    kubectl -n "$K3K_NS" create secret generic k3s-registry-config \
+        --from-file=registries.yaml="$REGISTRIES_FILE" \
+        --dry-run=client -o yaml | kubectl apply -f -
+    rm -f "$REGISTRIES_FILE"
+
+    # Store CA cert if provided
+    if [[ -n "$PRIVATE_CA_PATH" ]]; then
+        kubectl -n "$K3K_NS" create secret generic k3s-registry-ca \
+            --from-file=ca.crt="$PRIVATE_CA_PATH" \
+            --dry-run=client -o yaml | kubectl apply -f -
+    fi
+
+    log "Registry config Secrets created in $K3K_NS"
+fi
+
+# =============================================================================
 # Step 2: Create k3k virtual cluster
 # =============================================================================
-log "Step 2/7: Creating k3k virtual cluster..."
+log "Step 2/8: Creating k3k virtual cluster..."
 if kubectl get clusters.k3k.io "$K3K_CLUSTER" -n "$K3K_NS" &>/dev/null; then
     log "k3k cluster already exists, skipping"
 else
+    CLUSTER_MANIFEST=$(mktemp)
     sed -e "s|__PVC_SIZE__|${PVC_SIZE}|g" \
         -e "s|__STORAGE_CLASS__|${STORAGE_CLASS}|g" \
-        "$SCRIPT_DIR/rancher-cluster.yaml" | kubectl apply -f -
+        "$SCRIPT_DIR/rancher-cluster.yaml" > "$CLUSTER_MANIFEST"
+    inject_secret_mounts "$CLUSTER_MANIFEST"
+    kubectl apply -f "$CLUSTER_MANIFEST"
+    rm -f "$CLUSTER_MANIFEST"
 fi
 
 log "Waiting for k3k cluster to be ready..."
@@ -262,7 +298,7 @@ log "k3k cluster is Ready"
 # =============================================================================
 # Step 3: Extract kubeconfig
 # =============================================================================
-log "Step 3/7: Extracting kubeconfig..."
+log "Step 3/8: Extracting kubeconfig..."
 KUBECONFIG_FILE=$(mktemp)
 
 kubectl get secret "k3k-${K3K_CLUSTER}-kubeconfig" -n "$K3K_NS" \
@@ -324,7 +360,7 @@ fi
 # =============================================================================
 # Step 4: Deploy cert-manager
 # =============================================================================
-log "Step 4/7: Deploying cert-manager..."
+log "Step 4/8: Deploying cert-manager..."
 
 CERTMANAGER_MANIFEST=$(mktemp)
 sed -e "s|__CERTMANAGER_REPO__|${CERTMANAGER_REPO}|g" \
@@ -351,7 +387,7 @@ log "cert-manager is ready"
 # =============================================================================
 # Step 5: Deploy Rancher
 # =============================================================================
-log "Step 5/7: Deploying Rancher..."
+log "Step 5/8: Deploying Rancher..."
 
 RANCHER_MANIFEST=$(mktemp)
 sed -e "s|__HOSTNAME__|${HOSTNAME}|g" \
@@ -392,7 +428,7 @@ log "Rancher is running"
 # =============================================================================
 # Step 6: Copy TLS certificate to host cluster
 # =============================================================================
-log "Step 6/7: Copying Rancher TLS certificate to host cluster..."
+log "Step 6/8: Copying Rancher TLS certificate to host cluster..."
 
 ATTEMPTS=0
 while ! $K3K_CMD get secret tls-rancher-ingress -n cattle-system &>/dev/null; do
@@ -416,11 +452,22 @@ log "TLS certificate copied to host cluster"
 # =============================================================================
 # Step 7: Create host ingress
 # =============================================================================
-log "Step 7/7: Creating host cluster ingress..."
+log "Step 7/8: Creating host cluster ingress..."
 
 sed "s|__HOSTNAME__|${HOSTNAME}|g" "$SCRIPT_DIR/host-ingress.yaml" | kubectl apply -f -
 
 log "Host ingress created"
+
+# =============================================================================
+# Step 8: Deploy ingress reconciler and watcher
+# =============================================================================
+log "Step 8/8: Deploying ingress reconciler and watcher..."
+
+sed "s|__HOSTNAME__|${HOSTNAME}|g" "$SCRIPT_DIR/ingress-reconciler.yaml" | kubectl apply -f -
+sed "s|__HOSTNAME__|${HOSTNAME}|g" "$SCRIPT_DIR/ingress-watcher.yaml" | kubectl apply -f -
+
+log "Ingress watcher deployed (reacts within 30s of pod restart)"
+log "Ingress reconciler deployed (safety net, checks every 5 minutes)"
 
 # =============================================================================
 # Done

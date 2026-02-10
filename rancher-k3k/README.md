@@ -44,7 +44,7 @@ External Traffic
 │                                                      │
 │  Inside k3k virtual cluster:                         │
 │    ├── cert-manager (3 pods)                         │
-│    ├── Rancher v2.13.0 (fleet disabled)              │
+│    ├── Rancher (fleet disabled)                      │
 │    └── Traefik ingress controller                    │
 └──────────────────────────────────────────────────────┘
 ```
@@ -61,6 +61,45 @@ script works around this by:
 
 Without this, the cattle-cluster-agent gets: `x509: certificate is not valid for any names`
 
+## Known Limitations
+
+### No embedded manifest support
+
+Unlike vCluster's `manifestsTemplate`, k3k does not support deploying manifests inside the virtual cluster at creation time. Rancher, cert-manager, and the host ingress must be deployed as separate post-install steps. This makes the deployment multi-step and harder to manage as a single Harvester addon.
+
+### Host Ingress is not managed
+
+The nginx Ingress resource that routes external traffic to the k3k cluster is manually applied and **not managed by any controller**. During Harvester upgrades, this Ingress can be deleted when:
+
+- The `rke2-ingress-nginx` Helm chart upgrades (e.g., v4.12.600 → v4.13.400 during v1.6 → v1.7)
+- Node drains cause the nginx DaemonSet to restart with a temporarily unavailable admission webhook ([harvester/harvester#7956](https://github.com/harvester/harvester/issues/7956))
+
+After a Harvester upgrade, re-run `deploy.sh` or manually re-apply `host-ingress.yaml` to restore access.
+
+### Flannel crash after pod reschedule
+
+When `k3k-rancher-server-0` is evicted during a node drain and rescheduled to a different node, flannel's persisted network state in the PVC no longer matches the new pod IP, causing:
+
+```
+level=fatal msg="Failed to start networking: unable to initialize network policy controller:
+  error getting node subnet: failed to find interface with specified node ip"
+```
+
+The pod enters CrashLoopBackOff until it is rescheduled back to a node with a matching IP or the PVC network state is cleared.
+
+### Experimental status
+
+k3k v1.0.1 is the current stable release. The [v1.1.0 milestone](https://github.com/rancher/k3k/milestone/3) is in development.
+
+## Known Issues
+
+- [rancher/k3k#657](https://github.com/rancher/k3k/issues/657) — Pods exceeding 2GB ephemeral storage crash entire k3k server
+- [rancher/k3k#495](https://github.com/rancher/k3k/issues/495) — Ingress permission regression since v0.3.5
+- [rancher/k3k#590](https://github.com/rancher/k3k/issues/590) — Addons on shared mode stuck pending
+- [rancher/k3k#591](https://github.com/rancher/k3k/issues/591) — k3k leaving finalizers on unrelated StatefulPods
+- [harvester/harvester#7956](https://github.com/harvester/harvester/issues/7956) — Ingress-nginx admission webhook during upgrades
+- [harvester/harvester#6360](https://github.com/harvester/harvester/issues/6360) — Dashboard 404 after upgrade (ingress-nginx changes)
+
 ## Manual Installation
 
 If you prefer not to use the script:
@@ -69,7 +108,7 @@ If you prefer not to use the script:
 
 ```bash
 helm repo add k3k https://rancher.github.io/k3k
-helm install k3k k3k/k3k --namespace k3k-system --create-namespace --devel
+helm install k3k k3k/k3k --namespace k3k-system --create-namespace --version 1.0.1
 kubectl wait --for=condition=available deploy/k3k -n k3k-system --timeout=120s
 ```
 
@@ -131,7 +170,7 @@ sed 's|__HOSTNAME__|rancher.example.com|g' host-ingress.yaml | kubectl apply -f 
 ```
 rancher-k3k/
 ├── deploy.sh                # Automated deployment script
-├── destroy.sh               # Cleanup script
+├── destroy.sh               # Teardown script
 ├── lib.sh                   # Shared functions (sedi, auth injection)
 ├── test-private-repos.sh    # Tests for private repo support
 ├── rancher-cluster.yaml     # k3k Cluster CR (host cluster)
@@ -172,9 +211,32 @@ The CA is propagated to:
 
 ### Private Container Registry
 
-Enter the registry URL (e.g. `registry.example.com:5000`) when prompted.
-This sets Rancher's `systemDefaultRegistry` so all images are pulled from
-your mirror.
+Enter the registry host (e.g. `harbor.example.com`) when prompted.
+The script generates containerd mirror entries for three upstream registries:
+
+| Upstream | Components | Harbor project needed |
+|----------|-----------|----------------------|
+| `docker.io` | K3s system images, Rancher, Fleet | `docker.io` |
+| `quay.io` | cert-manager (jetstack) | `quay.io` |
+| `ghcr.io` | CloudNativePG, Zalando postgres-operator | `ghcr.io` |
+
+Each mirror uses a rewrite rule that routes through the matching Harbor proxy
+cache project. For example, `quay.io/jetstack/cert-manager-controller:v1.18.5`
+becomes `harbor.example.com/quay.io/jetstack/cert-manager-controller:v1.18.5`.
+
+The script configures three layers of registry support:
+
+1. **K3s containerd mirrors** (`spec.secretMounts`): A `registries.yaml` is
+   generated and mounted into the k3k virtual cluster pod at
+   `/etc/rancher/k3s/registries.yaml`. Containerd mirrors all three upstream
+   registries through your Harbor host, with optional TLS CA and auth.
+
+2. **K3s system images** (`--system-default-registry`): Added to
+   `spec.serverArgs` so K3s system components (CoreDNS, metrics-server, etc.)
+   are pulled from `<host>/docker.io`.
+
+3. **Rancher images** (`systemDefaultRegistry`): Set in the Rancher HelmChart
+   CR so Rancher prepends `<host>/docker.io` to all its image references.
 
 ### Testing
 
@@ -206,9 +268,15 @@ Run the included test script to validate template processing:
 |-------|-------------|----------|
 | `hostname` | Rancher URL (must resolve to Harvester VIP) | Yes |
 | `bootstrapPassword` | Initial admin password | Yes |
-| `features` | Feature flags (`fleet=false` for N-S boundary) | No |
+| `features` | Feature flags (`fleet=false` for North-South boundary) | No |
 
 ## Cleanup
+
+```bash
+./destroy.sh
+```
+
+Or manually:
 
 ```bash
 # Remove host ingress and TLS secret
