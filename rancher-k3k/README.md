@@ -131,12 +131,61 @@ sed 's|__HOSTNAME__|rancher.example.com|g' host-ingress.yaml | kubectl apply -f 
 ```
 rancher-k3k/
 ├── deploy.sh                # Automated deployment script
+├── destroy.sh               # Cleanup script
+├── lib.sh                   # Shared functions (sedi, auth injection)
+├── test-private-repos.sh    # Tests for private repo support
 ├── rancher-cluster.yaml     # k3k Cluster CR (host cluster)
 ├── host-ingress.yaml        # Service + Ingress template (host cluster)
 ├── post-install/            # Manifests for inside the k3k cluster
 │   ├── 01-cert-manager.yaml
 │   └── 02-rancher.yaml
 └── README.md
+```
+
+## Private Repositories
+
+`deploy.sh` supports air-gapped and private environments where Helm charts and
+container images come from internal registries (Harbor, Artifactory, Nexus, etc.).
+
+### Helm Repository Authentication
+
+When prompted, enter the username and password for your private Helm chart repo.
+A single credential pair is used for all three repos (cert-manager, Rancher, k3k).
+The password is read with hidden input.
+
+The script propagates auth in two ways:
+- **Host cluster**: `helm repo add` receives `--username`/`--password` flags
+- **k3k cluster**: A `kubernetes.io/basic-auth` Secret (`helm-repo-auth`) is
+  created in `kube-system`. The HelmChart CRs reference it via `spec.authSecret`.
+
+### Private CA Certificate
+
+If your repos or registries use TLS certificates signed by an internal CA,
+provide the path to the PEM-encoded CA bundle when prompted.
+
+The CA is propagated to:
+- **Host cluster**: `helm repo add` and `helm install` receive `--ca-file`
+- **k3k cluster (Rancher)**: A Secret (`tls-ca`) in `cattle-system` for
+  Rancher's `privateCA` setting
+- **k3k cluster (HelmChart CRs)**: A ConfigMap (`helm-repo-ca`) in
+  `kube-system` referenced via `spec.repoCAConfigMap`
+
+### Private Container Registry
+
+Enter the registry URL (e.g. `registry.example.com:5000`) when prompted.
+This sets Rancher's `systemDefaultRegistry` so all images are pulled from
+your mirror.
+
+### Testing
+
+Run the included test script to validate template processing:
+
+```bash
+# Tier 1: template validation (no cluster required)
+./test-private-repos.sh
+
+# Tier 2: local HTTPS server with auth (requires openssl + python3)
+./test-private-repos.sh --full
 ```
 
 ## Configuration

@@ -24,7 +24,7 @@ Each addon is a `harvesterhci.io/v1beta1/Addon` resource that wraps a Helm chart
 ### rancher-vcluster Addon
 Deploys vCluster v0.30.0 with embedded manifests that bootstrap cert-manager and Rancher.
 
-**Important:** vCluster 0.20+ has strict schema validation. Custom values must be hardcoded directly in `manifestsTemplate` (not under `global:`).
+**Important:** vCluster 0.20+ has strict schema validation (`additionalProperties: false`), but `global:` IS allowed as a standard Helm construct. The official Harvester v1.7.0 addon uses `global.hostname`, `global.rancherVersion`, and `global.bootstrapPassword` with `{{ .Values.global.* }}` templating in `manifestsTemplate`.
 
 ### rancher-k3k Addon
 Alternative using Rancher's k3k (Kubernetes in Kubernetes). Unlike vCluster, k3k does **not** support embedded manifests - Rancher must be deployed separately after cluster creation.
