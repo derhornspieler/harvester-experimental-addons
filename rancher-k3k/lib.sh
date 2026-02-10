@@ -67,52 +67,49 @@ inject_helmchart_auth() {
     fi
 }
 
-# Generate a K3s registries.yaml for Harbor proxy caches.
+# Upstream registries that the Rancher-on-k3k stack pulls from.
+# Each needs a corresponding proxy cache project in Harbor.
+#   docker.io  - K3s system images, Rancher, Fleet
+#   quay.io    - cert-manager (jetstack)
+#   ghcr.io    - CloudNativePG, Zalando postgres-operator
+MIRROR_REGISTRIES=("docker.io" "quay.io" "ghcr.io")
+
+# Generate a K3s registries.yaml with mirror entries for all upstream registries.
 # Writes the YAML to the file path given as the first argument.
 #
-# The registry URL is expected in Harbor proxy cache format:
-#   <host>/<project>  (e.g. harbor.tiger.net/docker.io)
-#
-# This generates a containerd mirror config that rewrites docker.io pulls
-# to go through the Harbor proxy cache project.
+# PRIVATE_REGISTRY is the registry host (e.g. harbor.tiger.net).
+# Mirror entries are generated for each registry in MIRROR_REGISTRIES.
+# Each mirror uses a rewrite rule that maps image paths through the
+# Harbor proxy cache project named after the upstream registry:
+#   docker.io/rancher/k3s:v1.34 → harbor.tiger.net/docker.io/rancher/k3s:v1.34
+#   quay.io/jetstack/cert-manager-controller:v1.18 → harbor.tiger.net/quay.io/jetstack/cert-manager-controller:v1.18
 #
 # Usage: build_registries_yaml <output-file>
 # Reads: PRIVATE_REGISTRY, PRIVATE_CA_PATH, HELM_REPO_USER, HELM_REPO_PASS
 build_registries_yaml() {
     local outfile="$1"
-    local registry="${PRIVATE_REGISTRY:-}"
+    local reg_host="${PRIVATE_REGISTRY:-}"
 
-    if [[ -z "$registry" ]]; then
+    if [[ -z "$reg_host" ]]; then
         return 1
     fi
 
-    # Split registry into host and project path
-    # e.g. "harbor.tiger.net/docker.io" → host="harbor.tiger.net" project="docker.io"
-    local reg_host reg_project
-    reg_host="${registry%%/*}"
-    reg_project="${registry#*/}"
-
-    # If no slash in the URL, there's no project path — use as-is
-    if [[ "$reg_host" == "$reg_project" ]]; then
-        reg_project=""
-    fi
-
+    # Generate mirror entries for each upstream registry
     cat > "$outfile" <<REGEOF
 mirrors:
-  docker.io:
+REGEOF
+
+    for upstream in "${MIRROR_REGISTRIES[@]}"; do
+        cat >> "$outfile" <<REGEOF
+  ${upstream}:
     endpoint:
       - "https://${reg_host}"
-REGEOF
-
-    # Add rewrite rule if there's a project path (e.g. docker.io)
-    if [[ -n "$reg_project" ]]; then
-        cat >> "$outfile" <<REGEOF
     rewrite:
-      "^(.*)$": "${reg_project}/\$1"
+      "^(.*)$": "${upstream}/\$1"
 REGEOF
-    fi
+    done
 
-    # Add configs section for TLS and/or auth
+    # Add configs section for TLS and/or auth (single entry for the Harbor host)
     if [[ -n "${PRIVATE_CA_PATH:-}" || -n "${HELM_REPO_USER:-}" ]]; then
         cat >> "$outfile" <<REGEOF
 configs:
@@ -176,8 +173,8 @@ inject_secret_mounts() {
         mv "$tmpfile" "$file"
         rm -f "$mounts_file"
 
-        # Inject --system-default-registry serverArg
-        sedi "s|^__EXTRA_SERVER_ARGS__$|    - \"--system-default-registry=${PRIVATE_REGISTRY}\"|" "$file"
+        # Inject --system-default-registry serverArg (K3s system images are all on docker.io)
+        sedi "s|^__EXTRA_SERVER_ARGS__$|    - \"--system-default-registry=${PRIVATE_REGISTRY}/docker.io\"|" "$file"
     else
         sedi "/__SECRET_MOUNTS__/d" "$file"
         sedi "/__EXTRA_SERVER_ARGS__/d" "$file"

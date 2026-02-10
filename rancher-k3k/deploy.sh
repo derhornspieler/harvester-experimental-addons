@@ -105,9 +105,10 @@ K3K_VERSION="${K3K_VERSION:-1.0.1}"
 # --- Private registry (optional) ---
 echo ""
 echo -e "${CYAN}Private Container Registry (press Enter to skip):${NC}"
-echo "  For Harbor proxy caches, use: harbor.example.com/docker.io"
-echo "  This configures K3s containerd to mirror docker.io through your registry."
-read -rp "Private registry URL []: " PRIVATE_REGISTRY
+echo "  Enter the registry host (e.g. harbor.example.com)."
+echo "  Containerd mirrors are generated for: docker.io, quay.io, ghcr.io"
+echo "  Each requires a matching proxy cache project in Harbor."
+read -rp "Private registry host []: " PRIVATE_REGISTRY
 PRIVATE_REGISTRY="${PRIVATE_REGISTRY:-}"
 
 # --- Private CA certificate (optional) ---
@@ -160,7 +161,7 @@ echo "  cert-manager:     $CERTMANAGER_REPO ($CERTMANAGER_VERSION)"
 echo "  Rancher:          $RANCHER_REPO ($RANCHER_VERSION)"
 echo "  k3k:              $K3K_REPO ($K3K_VERSION)"
 echo "  TLS Source:       $TLS_SOURCE"
-[[ -n "$PRIVATE_REGISTRY" ]] && echo "  Registry:         $PRIVATE_REGISTRY"
+[[ -n "$PRIVATE_REGISTRY" ]] && echo "  Registry:         $PRIVATE_REGISTRY (mirrors: docker.io, quay.io, ghcr.io)"
 [[ -n "$PRIVATE_CA_PATH" ]] && echo "  CA Cert:          $PRIVATE_CA_PATH"
 [[ -n "$HELM_REPO_USER" ]] && echo "  Helm Auth:        $HELM_REPO_USER / ****"
 echo ""
@@ -183,7 +184,8 @@ build_helm_ca_flags
 EXTRA_RANCHER_VALUES=""
 
 if [[ -n "$PRIVATE_REGISTRY" ]]; then
-    EXTRA_RANCHER_VALUES="${EXTRA_RANCHER_VALUES}    systemDefaultRegistry: \"${PRIVATE_REGISTRY}\"\n"
+    # Rancher images are all on docker.io, so systemDefaultRegistry needs host/docker.io
+    EXTRA_RANCHER_VALUES="${EXTRA_RANCHER_VALUES}    systemDefaultRegistry: \"${PRIVATE_REGISTRY}/docker.io\"\n"
 fi
 
 if [[ -n "$PRIVATE_CA_PATH" ]]; then

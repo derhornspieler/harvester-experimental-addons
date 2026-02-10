@@ -211,24 +211,32 @@ The CA is propagated to:
 
 ### Private Container Registry
 
-Enter the registry URL when prompted. For Harbor proxy caches, use the
-format `harbor.example.com/docker.io` where `docker.io` is the proxy cache
-project name.
+Enter the registry host (e.g. `harbor.example.com`) when prompted.
+The script generates containerd mirror entries for three upstream registries:
+
+| Upstream | Components | Harbor project needed |
+|----------|-----------|----------------------|
+| `docker.io` | K3s system images, Rancher, Fleet | `docker.io` |
+| `quay.io` | cert-manager (jetstack) | `quay.io` |
+| `ghcr.io` | CloudNativePG, Zalando postgres-operator | `ghcr.io` |
+
+Each mirror uses a rewrite rule that routes through the matching Harbor proxy
+cache project. For example, `quay.io/jetstack/cert-manager-controller:v1.18.5`
+becomes `harbor.example.com/quay.io/jetstack/cert-manager-controller:v1.18.5`.
 
 The script configures three layers of registry support:
 
 1. **K3s containerd mirrors** (`spec.secretMounts`): A `registries.yaml` is
    generated and mounted into the k3k virtual cluster pod at
-   `/etc/rancher/k3s/registries.yaml`. This tells containerd to pull all
-   `docker.io` images through your Harbor proxy cache, with optional TLS CA
-   and auth. The rewrite rule maps `image:tag` to `<project>/image:tag`.
+   `/etc/rancher/k3s/registries.yaml`. Containerd mirrors all three upstream
+   registries through your Harbor host, with optional TLS CA and auth.
 
 2. **K3s system images** (`--system-default-registry`): Added to
    `spec.serverArgs` so K3s system components (CoreDNS, metrics-server, etc.)
-   are pulled from your registry.
+   are pulled from `<host>/docker.io`.
 
 3. **Rancher images** (`systemDefaultRegistry`): Set in the Rancher HelmChart
-   CR so Rancher prepends your registry to all its image references.
+   CR so Rancher prepends `<host>/docker.io` to all its image references.
 
 ### Testing
 

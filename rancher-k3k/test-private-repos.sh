@@ -276,10 +276,10 @@ else
     skip "helm repo add with auth" "helm not installed"
 fi
 
-# --- Test 10: build_registries_yaml with Harbor proxy cache ---
+# --- Test 10: build_registries_yaml with Harbor host + auth + CA ---
 echo ""
-echo "Test 10: build_registries_yaml with Harbor proxy cache (host/project)"
-PRIVATE_REGISTRY="harbor.tiger.net/docker.io" PRIVATE_CA_PATH="/tmp/fake-ca.pem"
+echo "Test 10: build_registries_yaml with Harbor host (multi-registry mirrors)"
+PRIVATE_REGISTRY="harbor.tiger.net" PRIVATE_CA_PATH="/tmp/fake-ca.pem"
 HELM_REPO_USER="testuser" HELM_REPO_PASS="testpass"
 REGISTRY_FILE="$TMPDIR_TEST/registries.yaml"
 build_registries_yaml "$REGISTRY_FILE"
@@ -296,16 +296,31 @@ else
     fail "docker.io mirror" "docker.io mirror entry not found"
 fi
 
+if yaml_contains "quay.io:" "$REGISTRY_FILE"; then
+    pass "quay.io mirror present"
+else
+    fail "quay.io mirror" "quay.io mirror entry not found"
+fi
+
+if yaml_contains "ghcr.io:" "$REGISTRY_FILE"; then
+    pass "ghcr.io mirror present"
+else
+    fail "ghcr.io mirror" "ghcr.io mirror entry not found"
+fi
+
 if yaml_contains "https://harbor.tiger.net" "$REGISTRY_FILE"; then
     pass "Endpoint points to Harbor host"
 else
     fail "Endpoint" "Expected https://harbor.tiger.net"
 fi
 
-if yaml_contains 'docker.io/' "$REGISTRY_FILE"; then
-    pass "Rewrite rule includes project path"
+# Verify rewrite rules route to correct Harbor projects
+if yaml_contains 'docker.io/' "$REGISTRY_FILE" && \
+   yaml_contains 'quay.io/' "$REGISTRY_FILE" && \
+   yaml_contains 'ghcr.io/' "$REGISTRY_FILE"; then
+    pass "Rewrite rules map to Harbor proxy cache projects"
 else
-    fail "Rewrite" "Expected rewrite with docker.io/ prefix"
+    fail "Rewrite rules" "Expected rewrite with docker.io/, quay.io/, ghcr.io/ prefixes"
 fi
 
 if yaml_contains "ca_file:" "$REGISTRY_FILE"; then
@@ -320,9 +335,9 @@ else
     fail "Auth" "Expected auth username/password"
 fi
 
-# --- Test 11: build_registries_yaml without project path ---
+# --- Test 11: build_registries_yaml without CA or auth ---
 echo ""
-echo "Test 11: build_registries_yaml with plain registry (no project path)"
+echo "Test 11: build_registries_yaml without CA or auth"
 PRIVATE_REGISTRY="registry.example.com:5000" PRIVATE_CA_PATH="" HELM_REPO_USER="" HELM_REPO_PASS=""
 build_registries_yaml "$TMPDIR_TEST/registries-plain.yaml"
 
@@ -338,10 +353,13 @@ else
     fail "Endpoint" "Expected https://registry.example.com:5000"
 fi
 
-if yaml_not_contains "rewrite:" "$TMPDIR_TEST/registries-plain.yaml"; then
-    pass "No rewrite rule (no project path)"
+# All three upstream registries should still have mirror entries
+if yaml_contains "docker.io:" "$TMPDIR_TEST/registries-plain.yaml" && \
+   yaml_contains "quay.io:" "$TMPDIR_TEST/registries-plain.yaml" && \
+   yaml_contains "ghcr.io:" "$TMPDIR_TEST/registries-plain.yaml"; then
+    pass "All three upstream mirrors present"
 else
-    fail "No rewrite" "Rewrite should not be present without project path"
+    fail "Upstream mirrors" "Expected docker.io, quay.io, ghcr.io mirror entries"
 fi
 
 if yaml_not_contains "configs:" "$TMPDIR_TEST/registries-plain.yaml"; then
@@ -353,7 +371,7 @@ fi
 # --- Test 12: inject_secret_mounts with private registry + CA ---
 echo ""
 echo "Test 12: inject_secret_mounts with private registry + CA"
-PRIVATE_REGISTRY="harbor.tiger.net/docker.io" PRIVATE_CA_PATH="/tmp/fake-ca.pem"
+PRIVATE_REGISTRY="harbor.tiger.net" PRIVATE_CA_PATH="/tmp/fake-ca.pem"
 cp "$SCRIPT_DIR/rancher-cluster.yaml" "$TMPDIR_TEST/cluster-registry.yaml"
 sedi "s|__PVC_SIZE__|10Gi|g" "$TMPDIR_TEST/cluster-registry.yaml"
 sedi "s|__STORAGE_CLASS__|harvester-longhorn|g" "$TMPDIR_TEST/cluster-registry.yaml"
@@ -389,10 +407,10 @@ else
     fail "registries.yaml" "registries.yaml mount not found"
 fi
 
-if yaml_contains "system-default-registry" "$TMPDIR_TEST/cluster-registry.yaml"; then
-    pass "--system-default-registry serverArg injected"
+if yaml_contains "system-default-registry=harbor.tiger.net/docker.io" "$TMPDIR_TEST/cluster-registry.yaml"; then
+    pass "--system-default-registry=harbor.tiger.net/docker.io injected"
 else
-    fail "--system-default-registry" "serverArg not found"
+    fail "--system-default-registry" "Expected harbor.tiger.net/docker.io in serverArg"
 fi
 
 # --- Test 13: inject_secret_mounts without private registry ---
@@ -432,7 +450,7 @@ fi
 # --- Test 14: inject_secret_mounts with registry but no CA ---
 echo ""
 echo "Test 14: inject_secret_mounts with registry, no CA"
-PRIVATE_REGISTRY="registry.example.com:5000" PRIVATE_CA_PATH=""
+PRIVATE_REGISTRY="registry.example.com" PRIVATE_CA_PATH=""
 cp "$SCRIPT_DIR/rancher-cluster.yaml" "$TMPDIR_TEST/cluster-noca.yaml"
 sedi "s|__PVC_SIZE__|10Gi|g" "$TMPDIR_TEST/cluster-noca.yaml"
 sedi "s|__STORAGE_CLASS__|harvester-longhorn|g" "$TMPDIR_TEST/cluster-noca.yaml"
