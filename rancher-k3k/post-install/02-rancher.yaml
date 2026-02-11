@@ -24,8 +24,8 @@ metadata:
   namespace: kube-system
 spec:
   targetNamespace: cattle-system
-  repo: __RANCHER_REPO__
-  chart: rancher
+__RANCHER_REPO_LINE__
+  chart: __RANCHER_CHART__
   version: __RANCHER_VERSION__
   helmVersion: v3
 __AUTH_SECRET_LINE1__

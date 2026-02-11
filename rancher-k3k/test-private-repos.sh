@@ -71,10 +71,11 @@ TMPDIR_TEST=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_TEST"' EXIT
 
 # --- Test 1: Public defaults (no auth, no CA) ---
-echo "Test 1: cert-manager template with public defaults"
+echo "Test 1: cert-manager template with public defaults (HTTP)"
 HELM_REPO_USER="" PRIVATE_CA_PATH=""
 cp "$SCRIPT_DIR/post-install/01-cert-manager.yaml" "$TMPDIR_TEST/cm-public.yaml"
-sedi "s|__CERTMANAGER_REPO__|https://charts.jetstack.io|g" "$TMPDIR_TEST/cm-public.yaml"
+sedi "s|^__CERTMANAGER_REPO_LINE__$|  repo: https://charts.jetstack.io|" "$TMPDIR_TEST/cm-public.yaml"
+sedi "s|__CERTMANAGER_CHART__|cert-manager|g" "$TMPDIR_TEST/cm-public.yaml"
 sedi "s|__CERTMANAGER_VERSION__|v1.18.5|g" "$TMPDIR_TEST/cm-public.yaml"
 inject_helmchart_auth "$TMPDIR_TEST/cm-public.yaml"
 
@@ -97,14 +98,15 @@ else
     fail "No authSecret" "authSecret should not be present for public repos"
 fi
 
-# --- Test 2: Auth + CA enabled ---
+# --- Test 2: Auth + CA enabled (HTTP) ---
 echo ""
-echo "Test 2: cert-manager template with auth + CA"
+echo "Test 2: cert-manager template with auth + CA (HTTP)"
 HELM_REPO_USER="testuser" PRIVATE_CA_PATH="/tmp/fake-ca.pem"
 cp "$SCRIPT_DIR/post-install/01-cert-manager.yaml" "$TMPDIR_TEST/cm-auth.yaml"
-sedi "s|__CERTMANAGER_REPO__|https://harbor.example.com/chartrepo/library|g" "$TMPDIR_TEST/cm-auth.yaml"
+sedi "s|^__CERTMANAGER_REPO_LINE__$|  repo: https://harbor.example.com/chartrepo/library|" "$TMPDIR_TEST/cm-auth.yaml"
+sedi "s|__CERTMANAGER_CHART__|cert-manager|g" "$TMPDIR_TEST/cm-auth.yaml"
 sedi "s|__CERTMANAGER_VERSION__|v1.18.5|g" "$TMPDIR_TEST/cm-auth.yaml"
-inject_helmchart_auth "$TMPDIR_TEST/cm-auth.yaml"
+inject_helmchart_auth "$TMPDIR_TEST/cm-auth.yaml" "https://harbor.example.com/chartrepo/library"
 
 if validate_yaml "$TMPDIR_TEST/cm-auth.yaml" >/dev/null 2>&1; then
     pass "Valid YAML"
@@ -136,14 +138,15 @@ else
     fail "repoCAConfigMap name" "Expected 'name: helm-repo-ca'"
 fi
 
-# --- Test 3: Rancher template with public defaults ---
+# --- Test 3: Rancher template with public defaults (HTTP) ---
 echo ""
-echo "Test 3: Rancher template with public defaults"
+echo "Test 3: Rancher template with public defaults (HTTP)"
 HELM_REPO_USER="" PRIVATE_CA_PATH=""
 cp "$SCRIPT_DIR/post-install/02-rancher.yaml" "$TMPDIR_TEST/rancher-public.yaml"
 sedi "s|__HOSTNAME__|rancher.test.local|g" "$TMPDIR_TEST/rancher-public.yaml"
 sedi "s|__BOOTSTRAP_PW__|admin1234567890|g" "$TMPDIR_TEST/rancher-public.yaml"
-sedi "s|__RANCHER_REPO__|https://releases.rancher.com/server-charts/latest|g" "$TMPDIR_TEST/rancher-public.yaml"
+sedi "s|^__RANCHER_REPO_LINE__$|  repo: https://releases.rancher.com/server-charts/latest|" "$TMPDIR_TEST/rancher-public.yaml"
+sedi "s|__RANCHER_CHART__|rancher|g" "$TMPDIR_TEST/rancher-public.yaml"
 sedi "s|__RANCHER_VERSION__|v2.13.2|g" "$TMPDIR_TEST/rancher-public.yaml"
 sedi "s|__TLS_SOURCE__|rancher|g" "$TMPDIR_TEST/rancher-public.yaml"
 sedi "/__EXTRA_RANCHER_VALUES__/d" "$TMPDIR_TEST/rancher-public.yaml"
@@ -162,18 +165,19 @@ else
     fail "All placeholders resolved" "Unresolved placeholders remain in non-comment lines"
 fi
 
-# --- Test 4: Rancher template with auth + CA ---
+# --- Test 4: Rancher template with auth + CA (HTTP) ---
 echo ""
-echo "Test 4: Rancher template with auth + CA"
+echo "Test 4: Rancher template with auth + CA (HTTP)"
 HELM_REPO_USER="testuser" PRIVATE_CA_PATH="/tmp/fake-ca.pem"
 cp "$SCRIPT_DIR/post-install/02-rancher.yaml" "$TMPDIR_TEST/rancher-auth.yaml"
 sedi "s|__HOSTNAME__|rancher.test.local|g" "$TMPDIR_TEST/rancher-auth.yaml"
 sedi "s|__BOOTSTRAP_PW__|admin1234567890|g" "$TMPDIR_TEST/rancher-auth.yaml"
-sedi "s|__RANCHER_REPO__|https://harbor.example.com/chartrepo/library|g" "$TMPDIR_TEST/rancher-auth.yaml"
+sedi "s|^__RANCHER_REPO_LINE__$|  repo: https://harbor.example.com/chartrepo/library|" "$TMPDIR_TEST/rancher-auth.yaml"
+sedi "s|__RANCHER_CHART__|rancher|g" "$TMPDIR_TEST/rancher-auth.yaml"
 sedi "s|__RANCHER_VERSION__|v2.13.2|g" "$TMPDIR_TEST/rancher-auth.yaml"
 sedi "s|__TLS_SOURCE__|rancher|g" "$TMPDIR_TEST/rancher-auth.yaml"
 sedi "/__EXTRA_RANCHER_VALUES__/d" "$TMPDIR_TEST/rancher-auth.yaml"
-inject_helmchart_auth "$TMPDIR_TEST/rancher-auth.yaml"
+inject_helmchart_auth "$TMPDIR_TEST/rancher-auth.yaml" "https://harbor.example.com/chartrepo/library"
 
 if validate_yaml "$TMPDIR_TEST/rancher-auth.yaml" >/dev/null 2>&1; then
     pass "Valid YAML"
@@ -186,6 +190,180 @@ if yaml_contains "authSecret:" "$TMPDIR_TEST/rancher-auth.yaml" && \
     pass "Auth + CA injected"
 else
     fail "Auth + CA injected" "Expected authSecret and repoCAConfigMap"
+fi
+
+# --- Test OCI-1: is_oci() and oci_registry_host() helpers ---
+echo ""
+echo "Test OCI-1: is_oci() helper"
+if is_oci "oci://harbor.example.com/helm/cert-manager"; then
+    pass "Detects OCI URI"
+else
+    fail "OCI detection" "Should detect oci:// prefix"
+fi
+
+if ! is_oci "https://charts.jetstack.io"; then
+    pass "Rejects HTTP URL"
+else
+    fail "HTTP rejection" "Should not detect HTTP as OCI"
+fi
+
+if ! is_oci ""; then
+    pass "Rejects empty string"
+else
+    fail "Empty string" "Should not detect empty as OCI"
+fi
+
+echo ""
+echo "Test OCI-2: oci_registry_host() helper"
+HOST=$(oci_registry_host "oci://harbor.example.com/helm/cert-manager")
+if [[ "$HOST" == "harbor.example.com" ]]; then
+    pass "Extracts host: $HOST"
+else
+    fail "Host extraction" "Expected harbor.example.com, got $HOST"
+fi
+
+HOST=$(oci_registry_host "oci://registry.example.com:5000/charts/rancher")
+if [[ "$HOST" == "registry.example.com:5000" ]]; then
+    pass "Extracts host with port: $HOST"
+else
+    fail "Host+port extraction" "Expected registry.example.com:5000, got $HOST"
+fi
+
+# --- Test OCI-3: cert-manager template with OCI URI + auth ---
+echo ""
+echo "Test OCI-3: cert-manager template with OCI URI + auth"
+HELM_REPO_USER="testuser" PRIVATE_CA_PATH="/tmp/fake-ca.pem"
+cp "$SCRIPT_DIR/post-install/01-cert-manager.yaml" "$TMPDIR_TEST/cm-oci.yaml"
+sedi "/__CERTMANAGER_REPO_LINE__/d" "$TMPDIR_TEST/cm-oci.yaml"
+sedi "s|__CERTMANAGER_CHART__|oci://harbor.example.com/helm/cert-manager|g" "$TMPDIR_TEST/cm-oci.yaml"
+sedi "s|__CERTMANAGER_VERSION__|v1.18.5|g" "$TMPDIR_TEST/cm-oci.yaml"
+inject_helmchart_auth "$TMPDIR_TEST/cm-oci.yaml" "oci://harbor.example.com/helm/cert-manager"
+
+if validate_yaml "$TMPDIR_TEST/cm-oci.yaml" >/dev/null 2>&1; then
+    pass "Valid YAML"
+else
+    fail "Valid YAML" "$(validate_yaml "$TMPDIR_TEST/cm-oci.yaml" 2>&1)"
+fi
+
+if yaml_contains "chart: oci://harbor.example.com/helm/cert-manager" "$TMPDIR_TEST/cm-oci.yaml"; then
+    pass "OCI chart reference in spec.chart"
+else
+    fail "OCI chart ref" "Expected oci:// URI in chart field"
+fi
+
+if yaml_not_contains "repo:" "$TMPDIR_TEST/cm-oci.yaml"; then
+    pass "No repo field (OCI mode)"
+else
+    fail "No repo" "repo: should not be present for OCI"
+fi
+
+if yaml_contains "dockerRegistrySecret:" "$TMPDIR_TEST/cm-oci.yaml"; then
+    pass "dockerRegistrySecret present (OCI auth)"
+else
+    fail "dockerRegistrySecret" "Expected dockerRegistrySecret for OCI"
+fi
+
+if yaml_not_contains "authSecret:" "$TMPDIR_TEST/cm-oci.yaml"; then
+    pass "No authSecret (OCI uses dockerRegistrySecret)"
+else
+    fail "No authSecret" "authSecret should not be present for OCI"
+fi
+
+if yaml_contains "repoCAConfigMap:" "$TMPDIR_TEST/cm-oci.yaml"; then
+    pass "repoCAConfigMap present"
+else
+    fail "repoCAConfigMap" "Expected repoCAConfigMap in OCI mode"
+fi
+
+# --- Test OCI-4: Rancher template with OCI URI + auth ---
+echo ""
+echo "Test OCI-4: Rancher template with OCI URI + auth"
+HELM_REPO_USER="testuser" PRIVATE_CA_PATH="/tmp/fake-ca.pem"
+cp "$SCRIPT_DIR/post-install/02-rancher.yaml" "$TMPDIR_TEST/rancher-oci.yaml"
+sedi "s|__HOSTNAME__|rancher.test.local|g" "$TMPDIR_TEST/rancher-oci.yaml"
+sedi "s|__BOOTSTRAP_PW__|admin1234567890|g" "$TMPDIR_TEST/rancher-oci.yaml"
+sedi "/__RANCHER_REPO_LINE__/d" "$TMPDIR_TEST/rancher-oci.yaml"
+sedi "s|__RANCHER_CHART__|oci://harbor.example.com/helm/rancher|g" "$TMPDIR_TEST/rancher-oci.yaml"
+sedi "s|__RANCHER_VERSION__|v2.13.2|g" "$TMPDIR_TEST/rancher-oci.yaml"
+sedi "s|__TLS_SOURCE__|rancher|g" "$TMPDIR_TEST/rancher-oci.yaml"
+sedi "/__EXTRA_RANCHER_VALUES__/d" "$TMPDIR_TEST/rancher-oci.yaml"
+inject_helmchart_auth "$TMPDIR_TEST/rancher-oci.yaml" "oci://harbor.example.com/helm/rancher"
+
+if validate_yaml "$TMPDIR_TEST/rancher-oci.yaml" >/dev/null 2>&1; then
+    pass "Valid YAML"
+else
+    fail "Valid YAML" "$(validate_yaml "$TMPDIR_TEST/rancher-oci.yaml" 2>&1)"
+fi
+
+if yaml_contains "chart: oci://harbor.example.com/helm/rancher" "$TMPDIR_TEST/rancher-oci.yaml" && \
+   yaml_not_contains "repo:" "$TMPDIR_TEST/rancher-oci.yaml" && \
+   yaml_contains "dockerRegistrySecret:" "$TMPDIR_TEST/rancher-oci.yaml"; then
+    pass "OCI mode: chart ref, no repo, dockerRegistrySecret"
+else
+    fail "OCI mode" "Expected OCI chart ref, no repo, dockerRegistrySecret"
+fi
+
+# --- Test OCI-5: cert-manager OCI without auth (public OCI) ---
+echo ""
+echo "Test OCI-5: cert-manager OCI without auth (public OCI)"
+HELM_REPO_USER="" PRIVATE_CA_PATH=""
+cp "$SCRIPT_DIR/post-install/01-cert-manager.yaml" "$TMPDIR_TEST/cm-oci-pub.yaml"
+sedi "/__CERTMANAGER_REPO_LINE__/d" "$TMPDIR_TEST/cm-oci-pub.yaml"
+sedi "s|__CERTMANAGER_CHART__|oci://ghcr.io/jetstack/cert-manager|g" "$TMPDIR_TEST/cm-oci-pub.yaml"
+sedi "s|__CERTMANAGER_VERSION__|v1.18.5|g" "$TMPDIR_TEST/cm-oci-pub.yaml"
+inject_helmchart_auth "$TMPDIR_TEST/cm-oci-pub.yaml" "oci://ghcr.io/jetstack/cert-manager"
+
+if validate_yaml "$TMPDIR_TEST/cm-oci-pub.yaml" >/dev/null 2>&1; then
+    pass "Valid YAML"
+else
+    fail "Valid YAML" "$(validate_yaml "$TMPDIR_TEST/cm-oci-pub.yaml" 2>&1)"
+fi
+
+if yaml_not_contains "dockerRegistrySecret:" "$TMPDIR_TEST/cm-oci-pub.yaml" && \
+   yaml_not_contains "authSecret:" "$TMPDIR_TEST/cm-oci-pub.yaml" && \
+   yaml_not_contains "repoCAConfigMap:" "$TMPDIR_TEST/cm-oci-pub.yaml"; then
+    pass "No auth secrets (public OCI)"
+else
+    fail "No auth" "Should have no auth/CA for public OCI"
+fi
+
+# --- Test OCI-6: Mixed mode (cert-manager OCI, Rancher HTTP) ---
+echo ""
+echo "Test OCI-6: Mixed mode (cert-manager OCI + Rancher HTTP)"
+HELM_REPO_USER="testuser" PRIVATE_CA_PATH="/tmp/fake-ca.pem"
+
+# cert-manager as OCI
+cp "$SCRIPT_DIR/post-install/01-cert-manager.yaml" "$TMPDIR_TEST/cm-mixed.yaml"
+sedi "/__CERTMANAGER_REPO_LINE__/d" "$TMPDIR_TEST/cm-mixed.yaml"
+sedi "s|__CERTMANAGER_CHART__|oci://harbor.example.com/helm/cert-manager|g" "$TMPDIR_TEST/cm-mixed.yaml"
+sedi "s|__CERTMANAGER_VERSION__|v1.18.5|g" "$TMPDIR_TEST/cm-mixed.yaml"
+inject_helmchart_auth "$TMPDIR_TEST/cm-mixed.yaml" "oci://harbor.example.com/helm/cert-manager"
+
+# Rancher as HTTP
+cp "$SCRIPT_DIR/post-install/02-rancher.yaml" "$TMPDIR_TEST/rancher-mixed.yaml"
+sedi "s|__HOSTNAME__|rancher.test.local|g" "$TMPDIR_TEST/rancher-mixed.yaml"
+sedi "s|__BOOTSTRAP_PW__|admin1234567890|g" "$TMPDIR_TEST/rancher-mixed.yaml"
+sedi "s|^__RANCHER_REPO_LINE__$|  repo: https://releases.rancher.com/server-charts/latest|" "$TMPDIR_TEST/rancher-mixed.yaml"
+sedi "s|__RANCHER_CHART__|rancher|g" "$TMPDIR_TEST/rancher-mixed.yaml"
+sedi "s|__RANCHER_VERSION__|v2.13.2|g" "$TMPDIR_TEST/rancher-mixed.yaml"
+sedi "s|__TLS_SOURCE__|rancher|g" "$TMPDIR_TEST/rancher-mixed.yaml"
+sedi "/__EXTRA_RANCHER_VALUES__/d" "$TMPDIR_TEST/rancher-mixed.yaml"
+inject_helmchart_auth "$TMPDIR_TEST/rancher-mixed.yaml" "https://releases.rancher.com/server-charts/latest"
+
+# Verify cert-manager got OCI auth
+if yaml_contains "dockerRegistrySecret:" "$TMPDIR_TEST/cm-mixed.yaml" && \
+   yaml_not_contains "authSecret:" "$TMPDIR_TEST/cm-mixed.yaml"; then
+    pass "cert-manager uses dockerRegistrySecret (OCI)"
+else
+    fail "cert-manager OCI auth" "Expected dockerRegistrySecret only"
+fi
+
+# Verify Rancher got HTTP auth
+if yaml_contains "authSecret:" "$TMPDIR_TEST/rancher-mixed.yaml" && \
+   yaml_not_contains "dockerRegistrySecret:" "$TMPDIR_TEST/rancher-mixed.yaml"; then
+    pass "Rancher uses authSecret (HTTP)"
+else
+    fail "Rancher HTTP auth" "Expected authSecret only"
 fi
 
 # --- Test 5: build_helm_repo_flags with no auth ---

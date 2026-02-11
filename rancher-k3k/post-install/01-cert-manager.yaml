@@ -16,8 +16,8 @@ metadata:
   namespace: kube-system
 spec:
   targetNamespace: cert-manager
-  repo: __CERTMANAGER_REPO__
-  chart: cert-manager
+__CERTMANAGER_REPO_LINE__
+  chart: __CERTMANAGER_CHART__
   version: __CERTMANAGER_VERSION__
   helmVersion: v3
 __AUTH_SECRET_LINE1__

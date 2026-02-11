@@ -3,6 +3,10 @@
 #
 # Functions:
 #   sedi                  - Cross-platform sed -i
+#   is_oci                - Check if a chart reference is an OCI URI
+#   oci_registry_host     - Extract registry host from OCI URI
+#   helm_registry_login   - Authenticate to OCI registry for host-cluster Helm
+#   create_oci_auth_secret - Create dockerconfigjson Secret for OCI HelmChart CRs
 #   build_helm_repo_flags - Populate HELM_REPO_FLAGS array
 #   build_helm_ca_flags   - Populate HELM_CA_FLAGS array
 #   inject_helmchart_auth - Replace auth/CA placeholders in HelmChart CRs
@@ -16,6 +20,54 @@ sedi() {
     else
         sed -i '' "$@"
     fi
+}
+
+# Check if a chart reference is an OCI URI.
+# Usage: if is_oci "$REPO_OR_URI"; then ...
+is_oci() {
+    [[ "${1:-}" == oci://* ]]
+}
+
+# Extract the registry host from an OCI URI.
+# Handles hosts with ports (e.g. registry.example.com:5000).
+#   oci://harbor.example.com/helm/cert-manager → harbor.example.com
+#   oci://registry.example.com:5000/charts/rancher → registry.example.com:5000
+# Usage: HOST=$(oci_registry_host "$OCI_URI")
+oci_registry_host() {
+    echo "${1#oci://}" | cut -d/ -f1
+}
+
+# Authenticate to an OCI registry for host-cluster Helm operations.
+# Skipped if no credentials are configured.
+# Usage: helm_registry_login <host>
+# Reads: HELM_REPO_USER, HELM_REPO_PASS, PRIVATE_CA_PATH
+helm_registry_login() {
+    local host="$1"
+    local login_flags=()
+    if [[ -n "${HELM_REPO_USER:-}" && -n "${HELM_REPO_PASS:-}" ]]; then
+        login_flags+=(--username "$HELM_REPO_USER" --password "$HELM_REPO_PASS")
+    fi
+    if [[ -n "${PRIVATE_CA_PATH:-}" ]]; then
+        login_flags+=(--ca-file "$PRIVATE_CA_PATH")
+    fi
+    if [[ ${#login_flags[@]} -gt 0 ]]; then
+        helm registry login "$host" "${login_flags[@]}"
+    fi
+}
+
+# Create a kubernetes.io/dockerconfigjson Secret for OCI HelmChart CRs.
+# The K3s helm-controller uses spec.dockerRegistrySecret to pull OCI charts.
+# Usage: create_oci_auth_secret <kubectl-cmd> <secret-name> <registry-host>
+# Reads: HELM_REPO_USER, HELM_REPO_PASS
+create_oci_auth_secret() {
+    local kubectl_cmd="$1"
+    local secret_name="$2"
+    local registry_host="$3"
+    $kubectl_cmd -n kube-system create secret docker-registry "$secret_name" \
+        --docker-server="$registry_host" \
+        --docker-username="$HELM_REPO_USER" \
+        --docker-password="$HELM_REPO_PASS" \
+        --dry-run=client -o yaml | $kubectl_cmd apply -f -
 }
 
 # Build Helm repo flags for authentication and CA.
@@ -42,17 +94,29 @@ build_helm_ca_flags() {
 }
 
 # Replace auth/CA placeholders in a HelmChart CR manifest file.
-# If HELM_REPO_USER is set, injects authSecret lines; otherwise removes placeholders.
+# If HELM_REPO_USER is set, injects auth lines; otherwise removes placeholders.
 # If PRIVATE_CA_PATH is set, injects repoCAConfigMap lines; otherwise removes placeholders.
 #
-# Usage: inject_helmchart_auth <manifest-file>
+# Auth type depends on the chart source:
+#   HTTP repos  → spec.authSecret (kubernetes.io/basic-auth)
+#   OCI registries → spec.dockerRegistrySecret (kubernetes.io/dockerconfigjson)
+#
+# Usage: inject_helmchart_auth <manifest-file> [chart-or-repo]
 # Reads: HELM_REPO_USER, PRIVATE_CA_PATH
 inject_helmchart_auth() {
     local file="$1"
+    local chart_ref="${2:-}"
 
     if [[ -n "${HELM_REPO_USER:-}" ]]; then
-        sedi "s|^__AUTH_SECRET_LINE1__$|  authSecret:|" "$file"
-        sedi "s|^__AUTH_SECRET_LINE2__$|    name: helm-repo-auth|" "$file"
+        if is_oci "$chart_ref"; then
+            # OCI: use dockerRegistrySecret
+            sedi "s|^__AUTH_SECRET_LINE1__$|  dockerRegistrySecret:|" "$file"
+            sedi "s|^__AUTH_SECRET_LINE2__$|    name: helm-oci-auth|" "$file"
+        else
+            # HTTP: use authSecret (existing behavior)
+            sedi "s|^__AUTH_SECRET_LINE1__$|  authSecret:|" "$file"
+            sedi "s|^__AUTH_SECRET_LINE2__$|    name: helm-repo-auth|" "$file"
+        fi
     else
         sedi "/__AUTH_SECRET_LINE1__/d" "$file"
         sedi "/__AUTH_SECRET_LINE2__/d" "$file"

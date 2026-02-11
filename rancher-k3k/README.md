@@ -165,12 +165,51 @@ kubectl -n k3k-rancher create secret tls tls-rancher-ingress \
 sed 's|__HOSTNAME__|rancher.example.com|g' host-ingress.yaml | kubectl apply -f -
 ```
 
+## Terraform Setup
+
+After deploying Rancher and completing the UI bootstrap:
+
+```bash
+./terraform-setup.sh
+```
+
+The script:
+1. Extracts the k3k virtual cluster kubeconfig (`kubeconfig-k3k.yaml`)
+2. Authenticates to the Rancher API and creates a persistent API token
+3. Detects an imported Harvester cluster and generates its kubeconfig (`kubeconfig-harvester.yaml`)
+4. Writes `terraform.tfvars` with Rancher API credentials
+
+Use the output to configure the [Rancher2 Terraform provider](https://registry.terraform.io/providers/rancher/rancher2/latest):
+
+```hcl
+provider "rancher2" {
+  api_url   = var.rancher_url    # https://rancher.example.com
+  token_key = var.rancher_token  # from terraform.tfvars
+  insecure  = true               # self-signed TLS
+}
+```
+
+To provision RKE2 clusters on Harvester, create a cloud credential referencing the
+generated Harvester kubeconfig:
+
+```hcl
+resource "rancher2_cloud_credential" "harvester" {
+  name = "harvester"
+  harvester_credential_config {
+    cluster_id         = var.harvester_cluster_id
+    cluster_type       = "imported"
+    kubeconfig_content = file("kubeconfig-harvester.yaml")
+  }
+}
+```
+
 ## File Structure
 
 ```
 rancher-k3k/
 ├── deploy.sh                # Automated deployment script
 ├── destroy.sh               # Teardown script
+├── terraform-setup.sh       # Terraform + kubeconfig setup (post-deploy)
 ├── lib.sh                   # Shared functions (sedi, auth injection)
 ├── test-private-repos.sh    # Tests for private repo support
 ├── rancher-cluster.yaml     # k3k Cluster CR (host cluster)

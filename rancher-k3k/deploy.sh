@@ -8,6 +8,7 @@ set -euo pipefail
 # Supports:
 #   - Custom PVC sizing (10Gi to 1000Gi+)
 #   - Private Helm chart repos (cert-manager, Rancher)
+#   - OCI-based Helm registries (oci://harbor.example.com/project/chart)
 #   - Private container registries
 #   - Private CA certificates
 #   - Custom storage classes
@@ -81,22 +82,23 @@ fi
 read -rp "Storage class [harvester-longhorn]: " STORAGE_CLASS
 STORAGE_CLASS="${STORAGE_CLASS:-harvester-longhorn}"
 
-# --- Private repos (optional) ---
+# --- Helm chart sources (optional) ---
 echo ""
-echo -e "${CYAN}Helm Chart Repositories (press Enter for public defaults):${NC}"
-read -rp "cert-manager chart repo [https://charts.jetstack.io]: " CERTMANAGER_REPO
+echo -e "${CYAN}Helm Chart Sources (press Enter for public defaults):${NC}"
+echo "  Enter HTTP repo URLs or OCI URIs (oci://harbor.example.com/project/chart)"
+read -rp "cert-manager source [https://charts.jetstack.io]: " CERTMANAGER_REPO
 CERTMANAGER_REPO="${CERTMANAGER_REPO:-https://charts.jetstack.io}"
 
 read -rp "cert-manager version [v1.18.5]: " CERTMANAGER_VERSION
 CERTMANAGER_VERSION="${CERTMANAGER_VERSION:-v1.18.5}"
 
-read -rp "Rancher chart repo [https://releases.rancher.com/server-charts/latest]: " RANCHER_REPO
+read -rp "Rancher source [https://releases.rancher.com/server-charts/latest]: " RANCHER_REPO
 RANCHER_REPO="${RANCHER_REPO:-https://releases.rancher.com/server-charts/latest}"
 
 read -rp "Rancher version [v2.13.2]: " RANCHER_VERSION
 RANCHER_VERSION="${RANCHER_VERSION:-v2.13.2}"
 
-read -rp "k3k chart repo [https://rancher.github.io/k3k]: " K3K_REPO
+read -rp "k3k source [https://rancher.github.io/k3k]: " K3K_REPO
 K3K_REPO="${K3K_REPO:-https://rancher.github.io/k3k}"
 
 read -rp "k3k version [1.0.1]: " K3K_VERSION
@@ -157,9 +159,9 @@ echo "  Hostname:         $HOSTNAME"
 echo "  Password:         ****"
 echo "  PVC Size:         $PVC_SIZE"
 echo "  Storage Class:    $STORAGE_CLASS"
-echo "  cert-manager:     $CERTMANAGER_REPO ($CERTMANAGER_VERSION)"
-echo "  Rancher:          $RANCHER_REPO ($RANCHER_VERSION)"
-echo "  k3k:              $K3K_REPO ($K3K_VERSION)"
+echo "  cert-manager:     $CERTMANAGER_REPO ($CERTMANAGER_VERSION)$(is_oci "$CERTMANAGER_REPO" && echo ' [OCI]')"
+echo "  Rancher:          $RANCHER_REPO ($RANCHER_VERSION)$(is_oci "$RANCHER_REPO" && echo ' [OCI]')"
+echo "  k3k:              $K3K_REPO ($K3K_VERSION)$(is_oci "$K3K_REPO" && echo ' [OCI]')"
 echo "  TLS Source:       $TLS_SOURCE"
 [[ -n "$PRIVATE_REGISTRY" ]] && echo "  Registry:         $PRIVATE_REGISTRY (mirrors: docker.io, quay.io, ghcr.io)"
 [[ -n "$PRIVATE_CA_PATH" ]] && echo "  CA Cert:          $PRIVATE_CA_PATH"
@@ -173,10 +175,46 @@ if [[ "$CONFIRM" != "yes" ]]; then
 fi
 
 # =============================================================================
+# Compute OCI-derived variables
+# =============================================================================
+# For each chart source, determine whether it's OCI or HTTP and set the
+# template variables accordingly.
+if is_oci "$CERTMANAGER_REPO"; then
+    CERTMANAGER_CHART="$CERTMANAGER_REPO"       # Full OCI URI goes into spec.chart
+    CERTMANAGER_REPO_LINE=""                     # No spec.repo for OCI
+else
+    CERTMANAGER_CHART="cert-manager"             # Chart name only for HTTP
+    CERTMANAGER_REPO_LINE="  repo: ${CERTMANAGER_REPO}"
+fi
+
+if is_oci "$RANCHER_REPO"; then
+    RANCHER_CHART="$RANCHER_REPO"
+    RANCHER_REPO_LINE=""
+else
+    RANCHER_CHART="rancher"
+    RANCHER_REPO_LINE="  repo: ${RANCHER_REPO}"
+fi
+
+# =============================================================================
 # Build Helm flags for private repos
 # =============================================================================
 build_helm_repo_flags
 build_helm_ca_flags
+
+# Log in to OCI registries on the host cluster (deduplicated by host)
+OCI_LOGGED_HOSTS=()
+for _repo_var in K3K_REPO CERTMANAGER_REPO RANCHER_REPO; do
+    _repo_val="${!_repo_var}"
+    if is_oci "$_repo_val"; then
+        _host=$(oci_registry_host "$_repo_val")
+        # Skip if already logged in to this host
+        if [[ ! " ${OCI_LOGGED_HOSTS[*]+"${OCI_LOGGED_HOSTS[*]}"} " == *" ${_host} "* ]]; then
+            log "Logging in to OCI registry: $_host"
+            helm_registry_login "$_host"
+            OCI_LOGGED_HOSTS+=("$_host")
+        fi
+    fi
+done
 
 # =============================================================================
 # Build extra Rancher values
@@ -204,17 +242,28 @@ fi
 # =============================================================================
 echo ""
 log "Step 1/8: Installing k3k controller..."
-if ! helm repo add k3k "$K3K_REPO" --force-update ${HELM_REPO_FLAGS[@]+"${HELM_REPO_FLAGS[@]}"}; then
-    err "Failed to add k3k Helm repo: $K3K_REPO"
-    err "Check the URL, credentials, and CA certificate settings"
-    exit 1
-fi
-helm repo update k3k
-if helm status k3k -n k3k-system &>/dev/null; then
-    log "k3k already installed, upgrading to $K3K_VERSION..."
-    helm upgrade k3k k3k/k3k -n k3k-system --version "$K3K_VERSION" ${HELM_CA_FLAGS[@]+"${HELM_CA_FLAGS[@]}"}
+if is_oci "$K3K_REPO"; then
+    # OCI: install directly from OCI URI (no helm repo add)
+    if helm status k3k -n k3k-system &>/dev/null; then
+        log "k3k already installed, upgrading to $K3K_VERSION..."
+        helm upgrade k3k "$K3K_REPO" -n k3k-system --version "$K3K_VERSION" ${HELM_CA_FLAGS[@]+"${HELM_CA_FLAGS[@]}"}
+    else
+        helm install k3k "$K3K_REPO" -n k3k-system --create-namespace --version "$K3K_VERSION" ${HELM_CA_FLAGS[@]+"${HELM_CA_FLAGS[@]}"}
+    fi
 else
-    helm install k3k k3k/k3k -n k3k-system --create-namespace --version "$K3K_VERSION" ${HELM_CA_FLAGS[@]+"${HELM_CA_FLAGS[@]}"}
+    # HTTP: add repo then install
+    if ! helm repo add k3k "$K3K_REPO" --force-update ${HELM_REPO_FLAGS[@]+"${HELM_REPO_FLAGS[@]}"}; then
+        err "Failed to add k3k Helm repo: $K3K_REPO"
+        err "Check the URL, credentials, and CA certificate settings"
+        exit 1
+    fi
+    helm repo update k3k
+    if helm status k3k -n k3k-system &>/dev/null; then
+        log "k3k already installed, upgrading to $K3K_VERSION..."
+        helm upgrade k3k k3k/k3k -n k3k-system --version "$K3K_VERSION" ${HELM_CA_FLAGS[@]+"${HELM_CA_FLAGS[@]}"}
+    else
+        helm install k3k k3k/k3k -n k3k-system --create-namespace --version "$K3K_VERSION" ${HELM_CA_FLAGS[@]+"${HELM_CA_FLAGS[@]}"}
+    fi
 fi
 log "Waiting for k3k controller..."
 ATTEMPTS=0
@@ -340,13 +389,27 @@ fi
 # Step 3.6 (optional): Create in-cluster auth for HelmChart CRs
 # =============================================================================
 if [[ -n "$HELM_REPO_USER" ]]; then
-    log "Creating Helm repo auth secret in k3k cluster..."
-    $K3K_CMD -n kube-system create secret generic helm-repo-auth \
-        --type=kubernetes.io/basic-auth \
-        --from-literal=username="$HELM_REPO_USER" \
-        --from-literal=password="$HELM_REPO_PASS" \
-        --dry-run=client -o yaml | $K3K_CMD apply -f -
-    log "Helm repo auth secret created"
+    # HTTP charts use basic-auth Secret (spec.authSecret)
+    if ! is_oci "$CERTMANAGER_REPO" || ! is_oci "$RANCHER_REPO"; then
+        log "Creating Helm repo auth secret (basic-auth) in k3k cluster..."
+        $K3K_CMD -n kube-system create secret generic helm-repo-auth \
+            --type=kubernetes.io/basic-auth \
+            --from-literal=username="$HELM_REPO_USER" \
+            --from-literal=password="$HELM_REPO_PASS" \
+            --dry-run=client -o yaml | $K3K_CMD apply -f -
+        log "Helm repo auth secret (basic-auth) created"
+    fi
+
+    # OCI charts use dockerconfigjson Secret (spec.dockerRegistrySecret)
+    if is_oci "$CERTMANAGER_REPO" || is_oci "$RANCHER_REPO"; then
+        # Extract OCI host from the first OCI chart (typically all share one Harbor)
+        _oci_host=""
+        is_oci "$CERTMANAGER_REPO" && _oci_host=$(oci_registry_host "$CERTMANAGER_REPO")
+        [[ -z "$_oci_host" ]] && is_oci "$RANCHER_REPO" && _oci_host=$(oci_registry_host "$RANCHER_REPO")
+        log "Creating Helm OCI auth secret (dockerconfigjson) for $_oci_host..."
+        create_oci_auth_secret "$K3K_CMD" "helm-oci-auth" "$_oci_host"
+        log "Helm OCI auth secret created"
+    fi
 fi
 
 if [[ -n "$PRIVATE_CA_PATH" ]]; then
@@ -363,10 +426,18 @@ fi
 log "Step 4/8: Deploying cert-manager..."
 
 CERTMANAGER_MANIFEST=$(mktemp)
-sed -e "s|__CERTMANAGER_REPO__|${CERTMANAGER_REPO}|g" \
+sed -e "s|__CERTMANAGER_CHART__|${CERTMANAGER_CHART}|g" \
     -e "s|__CERTMANAGER_VERSION__|${CERTMANAGER_VERSION}|g" \
     "$SCRIPT_DIR/post-install/01-cert-manager.yaml" > "$CERTMANAGER_MANIFEST"
-inject_helmchart_auth "$CERTMANAGER_MANIFEST"
+
+# Inject or remove the repo line (OCI has no spec.repo)
+if [[ -n "$CERTMANAGER_REPO_LINE" ]]; then
+    sedi "s|^__CERTMANAGER_REPO_LINE__$|${CERTMANAGER_REPO_LINE}|" "$CERTMANAGER_MANIFEST"
+else
+    sedi "/__CERTMANAGER_REPO_LINE__/d" "$CERTMANAGER_MANIFEST"
+fi
+
+inject_helmchart_auth "$CERTMANAGER_MANIFEST" "$CERTMANAGER_REPO"
 $K3K_CMD apply -f "$CERTMANAGER_MANIFEST"
 rm -f "$CERTMANAGER_MANIFEST"
 
@@ -392,10 +463,17 @@ log "Step 5/8: Deploying Rancher..."
 RANCHER_MANIFEST=$(mktemp)
 sed -e "s|__HOSTNAME__|${HOSTNAME}|g" \
     -e "s|__BOOTSTRAP_PW__|${BOOTSTRAP_PW}|g" \
-    -e "s|__RANCHER_REPO__|${RANCHER_REPO}|g" \
+    -e "s|__RANCHER_CHART__|${RANCHER_CHART}|g" \
     -e "s|__RANCHER_VERSION__|${RANCHER_VERSION}|g" \
     -e "s|__TLS_SOURCE__|${TLS_SOURCE}|g" \
     "$SCRIPT_DIR/post-install/02-rancher.yaml" > "$RANCHER_MANIFEST"
+
+# Inject or remove the repo line (OCI has no spec.repo)
+if [[ -n "$RANCHER_REPO_LINE" ]]; then
+    sedi "s|^__RANCHER_REPO_LINE__$|${RANCHER_REPO_LINE}|" "$RANCHER_MANIFEST"
+else
+    sedi "/__RANCHER_REPO_LINE__/d" "$RANCHER_MANIFEST"
+fi
 
 # Inject extra values (private registry, private CA)
 if [[ -n "$EXTRA_RANCHER_VALUES" ]]; then
@@ -405,7 +483,7 @@ else
 fi
 
 # Inject HelmChart auth/CA references
-inject_helmchart_auth "$RANCHER_MANIFEST"
+inject_helmchart_auth "$RANCHER_MANIFEST" "$RANCHER_REPO"
 
 $K3K_CMD apply -f "$RANCHER_MANIFEST"
 rm -f "$RANCHER_MANIFEST"

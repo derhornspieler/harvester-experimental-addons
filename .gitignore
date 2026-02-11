@@ -17,3 +17,9 @@ Thumbs.db
 # Kubeconfig (never commit)
 kubeconfig*
 *.kubeconfig
+
+# Terraform (never commit)
+*.tfvars
+*.tfstate
+*.tfstate.backup
+.terraform/
