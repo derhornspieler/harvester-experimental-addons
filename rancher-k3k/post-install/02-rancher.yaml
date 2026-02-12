@@ -5,11 +5,12 @@
 # Placeholders replaced by deploy.sh:
 #   __HOSTNAME__             - Rancher URL
 #   __BOOTSTRAP_PW__         - Initial admin password
-#   __RANCHER_REPO__         - Helm chart repository
+#   __RANCHER_REPO_LINE__    - "  repo: <url>" for HTTP, removed for OCI
+#   __RANCHER_CHART__        - Chart name (HTTP) or full OCI URI
 #   __RANCHER_VERSION__      - Rancher chart version
-#   __SYSTEM_REGISTRY__      - Private container registry (optional)
+#   __TLS_SOURCE__           - TLS certificate source (rancher/letsEncrypt/secret)
 #   __EXTRA_RANCHER_VALUES__ - Additional Helm set values (optional)
-#   __AUTH_SECRET_LINE1/2__  - HelmChart authSecret (injected by lib.sh)
+#   __AUTH_SECRET_LINE1/2__  - HelmChart auth (injected by lib.sh)
 #   __REPO_CA_LINE1/2__     - HelmChart repoCAConfigMap (injected by lib.sh)
 ---
 apiVersion: v1
