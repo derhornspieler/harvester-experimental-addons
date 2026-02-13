@@ -12,18 +12,20 @@ Deploy Rancher management server using [k3k](https://github.com/rancher/k3k) (Ku
 
 The script prompts for hostname and password, then handles everything:
 1. Installs k3k controller
-2. Creates the virtual cluster (10Gi storage)
+2. Creates the virtual cluster (configurable storage)
 3. Deploys cert-manager + Rancher inside it
 4. Copies the TLS certificate to the host cluster
 5. Creates the nginx ingress for external access
+6. Deploys ingress reconciler (CronJob) and watcher (Deployment)
+7. Merges kubeconfig with `~/.kube/config`
 
 ## Architecture
 
 ```
 External Traffic
   → rancher.example.com (Harvester VIP)
-    → nginx ingress (host cluster, k3k-rancher namespace)
-      → k3k-rancher-traefik service → k3k server pod :443
+    → nginx ingress (host cluster, rancher-k3k namespace)
+      → rancher-k3k-traefik service → k3k server pod :443
         → Traefik (inside k3k virtual cluster)
           → Rancher (cattle-system namespace)
 ```
@@ -35,10 +37,10 @@ External Traffic
 │  │  k3k-system namespace                          │  │
 │  │  └── k3k-controller                            │  │
 │  ├────────────────────────────────────────────────┤  │
-│  │  k3k-rancher namespace                         │  │
+│  │  rancher-k3k namespace                         │  │
 │  │  ├── k3k-rancher-server-0 (K3s virtual cluster)│  │
-│  │  ├── k3k-rancher-traefik (svc → pod :443)      │  │
-│  │  ├── k3k-rancher-ingress (nginx, with TLS)     │  │
+│  │  ├── rancher-k3k-traefik (svc → pod :443)      │  │
+│  │  ├── rancher-k3k-ingress (nginx, with TLS)     │  │
 │  │  └── tls-rancher-ingress (copied from k3k)     │  │
 │  └────────────────────────────────────────────────┘  │
 │                                                      │
@@ -89,7 +91,9 @@ The pod enters CrashLoopBackOff until it is rescheduled back to a node with a ma
 
 ### Experimental status
 
-k3k v1.0.1 is the current stable release. The [v1.1.0 milestone](https://github.com/rancher/k3k/milestone/3) is in development.
+k3k v1.0.2-rc2 is the minimum required version. The stable v1.0.2 release is pending.
+v1.0.2 adds `secretMounts` ([PR #570](https://github.com/rancher/k3k/pull/570)) which is required
+for private CA and container registry support.
 
 ## Known Issues
 
@@ -108,7 +112,7 @@ If you prefer not to use the script:
 
 ```bash
 helm repo add k3k https://rancher.github.io/k3k
-helm install k3k k3k/k3k --namespace k3k-system --create-namespace --version 1.0.1
+helm install k3k k3k/k3k --namespace k3k-system --create-namespace --version 1.0.2-rc2
 kubectl wait --for=condition=available deploy/k3k -n k3k-system --timeout=120s
 ```
 
@@ -117,19 +121,19 @@ kubectl wait --for=condition=available deploy/k3k -n k3k-system --timeout=120s
 ```bash
 kubectl apply -f rancher-cluster.yaml
 # Wait for Ready status
-kubectl get clusters.k3k.io rancher -n k3k-rancher -w
+kubectl get clusters.k3k.io rancher -n rancher-k3k -w
 ```
 
 ### Step 3: Extract and Fix Kubeconfig
 
 ```bash
 # Extract kubeconfig (key is kubeconfig.yaml, not kubeconfig)
-kubectl get secret k3k-rancher-kubeconfig -n k3k-rancher \
+kubectl get secret k3k-rancher-kubeconfig -n rancher-k3k \
     -o jsonpath='{.data.kubeconfig\.yaml}' | base64 -d > k3k-kubeconfig.yaml
 
 # The kubeconfig points to a ClusterIP — replace with NodePort
 NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-NODE_PORT=$(kubectl get svc k3k-rancher-service -n k3k-rancher \
+NODE_PORT=$(kubectl get svc k3k-rancher-service -n rancher-k3k \
     -o jsonpath='{.spec.ports[?(@.port==443)].nodePort}')
 
 # Edit k3k-kubeconfig.yaml: change server to https://<NODE_IP>:<NODE_PORT>
@@ -158,7 +162,7 @@ TLS_KEY=$(kubectl --insecure-skip-tls-verify -n cattle-system \
     get secret tls-rancher-ingress -o jsonpath='{.data.tls\.key}' | base64 -d)
 
 unset KUBECONFIG
-kubectl -n k3k-rancher create secret tls tls-rancher-ingress \
+kubectl -n rancher-k3k create secret tls tls-rancher-ingress \
     --cert=<(echo "$TLS_CRT") --key=<(echo "$TLS_KEY")
 
 # Apply ingress (replace __HOSTNAME__ with your hostname)
@@ -207,13 +211,17 @@ resource "rancher2_cloud_credential" "harvester" {
 
 ```
 rancher-k3k/
-├── deploy.sh                # Automated deployment script
-├── destroy.sh               # Teardown script
+├── deploy.sh                # Automated 9-step deployment script
+├── destroy.sh               # Teardown with monitoring and verification
+├── lib.sh                   # Shared functions (sedi, OCI, auth injection)
 ├── terraform-setup.sh       # Terraform + kubeconfig setup (post-deploy)
-├── lib.sh                   # Shared functions (sedi, auth injection)
-├── test-private-repos.sh    # Tests for private repo support
+├── test-private-repos.sh    # 63 tests for private repo support
+├── k3k-controller.yaml      # Harvester addon CRD for k3k controller
 ├── rancher-cluster.yaml     # k3k Cluster CR (host cluster)
 ├── host-ingress.yaml        # Service + Ingress template (host cluster)
+├── ingress-reconciler.yaml  # CronJob: restores ingress every 5 min
+├── ingress-watcher.yaml     # Deployment: event-driven ingress recovery
+├── restore-ingress.sh       # Standalone ingress restoration script
 ├── post-install/            # Manifests for inside the k3k cluster
 │   ├── 01-cert-manager.yaml
 │   └── 02-rancher.yaml
@@ -249,6 +257,11 @@ The CA is propagated to:
   `kube-system` referenced via `spec.repoCAConfigMap`
 
 ### Private Container Registry
+
+> **Requires k3k >= v1.0.2-rc2.** The `secretMounts` field
+> ([PR #570](https://github.com/rancher/k3k/pull/570)) is needed to mount
+> `registries.yaml` and CA certificates into k3k server pods. v1.0.1 does not
+> have this field and will reject the Cluster CR.
 
 Enter the registry host (e.g. `harbor.example.com`) when prompted.
 The script generates containerd mirror entries for three upstream registries:
@@ -319,26 +332,45 @@ Or manually:
 
 ```bash
 # Remove host ingress and TLS secret
-kubectl delete ingress k3k-rancher-ingress -n k3k-rancher
-kubectl delete svc k3k-rancher-traefik -n k3k-rancher
-kubectl delete secret tls-rancher-ingress -n k3k-rancher
+kubectl delete ingress rancher-k3k-ingress -n rancher-k3k
+kubectl delete svc rancher-k3k-traefik -n rancher-k3k
+kubectl delete secret tls-rancher-ingress -n rancher-k3k
 
 # Delete the virtual cluster
-kubectl delete clusters.k3k.io rancher -n k3k-rancher
+kubectl delete clusters.k3k.io rancher -n rancher-k3k
 
 # Uninstall k3k controller
 helm uninstall k3k -n k3k-system
 
 # Clean up namespaces
-kubectl delete ns k3k-rancher k3k-system
+kubectl delete ns rancher-k3k k3k-system
 ```
+
+## Changelog
+
+### 2026-02-12: k3k v1.0.2-rc2 + private CA support
+
+- **Bump k3k 1.0.1 → 1.0.2-rc2**: Required for `secretMounts` support
+  ([PR #570](https://github.com/rancher/k3k/pull/570)). v1.0.1 does not have
+  the `secretMounts` field in the Cluster CRD, causing `kubectl apply` to reject
+  the manifest when a private registry is configured.
+- **Private CA support**: The `secretMounts` field allows mounting `registries.yaml`
+  and CA certificates directly into k3k server/agent pods at
+  `/etc/rancher/k3s/registries.yaml` and `/etc/rancher/k3s/tls/ca.crt`. This
+  enables containerd inside the virtual cluster to trust private CAs for image
+  pulls from Harbor, Artifactory, or other internal registries.
+- **Auth prompt UX**: Helm repo authentication is now gated behind a yes/no
+  question (`Do your Helm repos require authentication?`). Public repos no
+  longer show username/password prompts.
+- **`role: all`**: Secret mounts now include `role: all` to ensure both server
+  and agent pods receive the registry configuration.
 
 ## Troubleshooting
 
 ### Cluster not starting
 ```bash
 kubectl logs -n k3k-system deployment/k3k
-kubectl describe clusters.k3k.io rancher -n k3k-rancher
+kubectl describe clusters.k3k.io rancher -n rancher-k3k
 ```
 
 ### Rancher image pull fails (no space)
