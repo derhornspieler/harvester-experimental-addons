@@ -19,8 +19,8 @@ spec:
   # Virtual mode: complete isolation with dedicated K3s server pods
   mode: virtual
 
-  # Single server node
-  servers: 1
+  # HA: 3 server nodes for etcd quorum
+  servers: 3
   agents: 0
 
   # Use distinct CIDRs to avoid conflict with host cluster

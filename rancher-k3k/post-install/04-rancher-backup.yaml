@@ -4,7 +4,7 @@
 #
 # Placeholders replaced by deploy.sh:
 #   __BACKUP_REPO__    - Helm chart repository (default: https://charts.rancher.io)
-#   __BACKUP_VERSION__ - Chart version (default: v9.0.1)
+#   __BACKUP_VERSION__ - Chart version (default: 108.0.1+up9.0.1)
 ---
 apiVersion: v1
 kind: Namespace
@@ -25,4 +25,5 @@ spec:
   valuesContent: |-
     persistence:
       enabled: true
-      existingClaim: rancher-backup-pvc
+      storageClass: "local-path"
+      size: 10Gi

@@ -12,9 +12,9 @@ set -euo pipefail
 #
 # The --operator-restore flag triggers a Restore CR after the rancher-backup operator
 # is running, which restores Rancher resources (users, clusters, settings) from an
-# operator backup stored on the NFS server.
+# operator backup stored on MinIO S3 (172.16.3.249:9000).
 
-K3K_NS="k3k-rancher"
+K3K_NS="rancher-k3k"
 K3K_CLUSTER="rancher"
 
 # Colors
@@ -60,7 +60,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --operator-restore <filename>     Trigger operator restore from NFS backup file"
             echo ""
             echo "The backup directory should be created by backup.sh."
-            echo "The operator-restore filename is the .tar.gz file on the NFS server."
+            echo "The operator-restore filename is the .tar.gz file on MinIO S3."
             exit 0
             ;;
         *)
@@ -226,16 +226,14 @@ if [[ -n "$OPERATOR_RESTORE_FILE" ]]; then
     fi
     $K3K_CMD wait --for=condition=available deploy/rancher-backup -n cattle-resources-system --timeout=120s
 
-    # Verify the PVC is bound
-    PVC_STATUS=$($K3K_CMD get pvc rancher-backup-pvc -n cattle-resources-system \
-        -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-    if [[ "$PVC_STATUS" != "Bound" ]]; then
-        err "rancher-backup-pvc is not Bound (status: $PVC_STATUS)"
-        err "Check NFS server connectivity and PV/PVC configuration"
+    # Verify S3 credentials secret exists
+    if ! $K3K_CMD get secret minio-backup-creds -n cattle-resources-system &>/dev/null; then
+        err "S3 credentials secret 'minio-backup-creds' not found in cattle-resources-system"
+        err "Create it first with: kubectl create secret generic minio-backup-creds ..."
         exit 1
     fi
 
-    # Create Restore CR
+    # Create Restore CR with S3 storage location
     RESTORE_NAME="restore-$(date +%Y%m%d-%H%M%S)"
     log "  Creating Restore CR: $RESTORE_NAME"
     log "  Restoring from: $OPERATOR_RESTORE_FILE"
@@ -247,6 +245,13 @@ metadata:
   name: $RESTORE_NAME
 spec:
   backupFilename: $OPERATOR_RESTORE_FILE
+  storageLocation:
+    s3:
+      credentialSecretName: minio-backup-creds
+      credentialSecretNamespace: cattle-resources-system
+      bucketName: rancher-backups
+      endpoint: 172.16.3.249:9000
+      insecureTLSSkipVerify: true
 EOF
 
     # Wait for restore to complete (10 min timeout)

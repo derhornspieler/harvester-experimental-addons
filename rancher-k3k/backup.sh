@@ -18,7 +18,7 @@ set -euo pipefail
 #   ./backup.sh /path/to/dir       # Backup to specified directory
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-K3K_NS="k3k-rancher"
+K3K_NS="rancher-k3k"
 K3K_CLUSTER="rancher"
 
 # Colors
@@ -152,7 +152,7 @@ kind: Backup
 metadata:
   name: $ONDEMAND_NAME
 spec:
-  resourceSetName: rancher-resource-set
+  resourceSetName: rancher-resource-set-full
 EOF
 
     # Wait for backup to complete (5 min timeout)
