@@ -158,6 +158,29 @@ if [[ -n "$PRIVATE_CA_PATH" && ! -f "$PRIVATE_CA_PATH" ]]; then
     exit 1
 fi
 
+# --- Backup configuration (optional) ---
+echo ""
+echo -e "${CYAN}Backup Configuration (rancher-backup operator):${NC}"
+read -rp "Enable rancher-backup operator? (yes/no) [yes]: " ENABLE_BACKUP
+ENABLE_BACKUP="${ENABLE_BACKUP:-yes}"
+
+if [[ "$ENABLE_BACKUP" == "yes" ]]; then
+    read -rp "NFS backup server IP [172.16.3.249]: " NFS_SERVER_IP
+    NFS_SERVER_IP="${NFS_SERVER_IP:-172.16.3.249}"
+
+    read -rp "Backup schedule (cron) [*/30 * * * *]: " BACKUP_SCHEDULE
+    BACKUP_SCHEDULE="${BACKUP_SCHEDULE:-*/30 * * * *}"
+
+    read -rp "Backup retention count [10]: " BACKUP_RETENTION
+    BACKUP_RETENTION="${BACKUP_RETENTION:-10}"
+
+    read -rp "Backup chart repo [https://charts.rancher.io]: " BACKUP_REPO
+    BACKUP_REPO="${BACKUP_REPO:-https://charts.rancher.io}"
+
+    read -rp "Backup chart version [v9.0.1]: " BACKUP_VERSION
+    BACKUP_VERSION="${BACKUP_VERSION:-v9.0.1}"
+fi
+
 # --- Confirm ---
 echo ""
 echo -e "${CYAN}Configuration Summary:${NC}"
@@ -172,6 +195,11 @@ echo "  TLS Source:       $TLS_SOURCE"
 [[ -n "$PRIVATE_REGISTRY" ]] && echo "  Registry:         $PRIVATE_REGISTRY (mirrors: docker.io, quay.io, ghcr.io)"
 [[ -n "$PRIVATE_CA_PATH" ]] && echo "  CA Cert:          $PRIVATE_CA_PATH"
 [[ -n "$HELM_REPO_USER" ]] && echo "  Helm Auth:        $HELM_REPO_USER / ****" || echo "  Helm Auth:        none (public repos)"
+if [[ "$ENABLE_BACKUP" == "yes" ]]; then
+    echo "  Backup:           enabled (${BACKUP_SCHEDULE}, retain ${BACKUP_RETENTION}, NFS: ${NFS_SERVER_IP})"
+else
+    echo "  Backup:           disabled"
+fi
 echo ""
 read -rp "Proceed? (yes/no) [yes]: " CONFIRM
 CONFIRM="${CONFIRM:-yes}"
@@ -510,6 +538,67 @@ $K3K_CMD wait --for=condition=available deploy/rancher -n cattle-system --timeou
 log "Rancher is running"
 
 # =============================================================================
+# Step 5a: Deploy rancher-backup operator (optional)
+# =============================================================================
+if [[ "$ENABLE_BACKUP" == "yes" ]]; then
+    log "Step 5a: Deploying rancher-backup operator..."
+
+    # 1. Create namespace and apply NFS PV + PVC
+    $K3K_CMD create namespace cattle-resources-system --dry-run=client -o yaml | $K3K_CMD apply -f -
+
+    NFS_MANIFEST=$(mktemp)
+    sed "s|__NFS_SERVER_IP__|${NFS_SERVER_IP}|g" \
+        "$SCRIPT_DIR/post-install/05-nfs-backup-storage.yaml" > "$NFS_MANIFEST"
+    $K3K_CMD apply -f "$NFS_MANIFEST"
+    rm -f "$NFS_MANIFEST"
+    log "NFS PV + PVC applied"
+
+    # 2. Apply CRD HelmChart
+    sed -e "s|__BACKUP_REPO__|${BACKUP_REPO}|g" \
+        -e "s|__BACKUP_VERSION__|${BACKUP_VERSION}|g" \
+        "$SCRIPT_DIR/post-install/03-rancher-backup-crd.yaml" | $K3K_CMD apply -f -
+
+    # 3. Wait for CRDs to be registered
+    log "Waiting for rancher-backup CRDs..."
+    ATTEMPTS=0
+    while ! $K3K_CMD get crd backups.resources.cattle.io &>/dev/null; do
+        if [[ $ATTEMPTS -ge 60 ]]; then
+            err "Timed out waiting for rancher-backup CRDs"
+            exit 1
+        fi
+        ATTEMPTS=$((ATTEMPTS + 1))
+        sleep 5
+    done
+    log "rancher-backup CRDs registered"
+
+    # 4. Apply operator HelmChart
+    sed -e "s|__BACKUP_REPO__|${BACKUP_REPO}|g" \
+        -e "s|__BACKUP_VERSION__|${BACKUP_VERSION}|g" \
+        "$SCRIPT_DIR/post-install/04-rancher-backup.yaml" | $K3K_CMD apply -f -
+
+    # 5. Wait for operator deployment
+    log "Waiting for rancher-backup operator..."
+    ATTEMPTS=0
+    while ! $K3K_CMD get deploy/rancher-backup -n cattle-resources-system &>/dev/null; do
+        if [[ $ATTEMPTS -ge 60 ]]; then
+            err "Timed out waiting for rancher-backup deployment"
+            exit 1
+        fi
+        ATTEMPTS=$((ATTEMPTS + 1))
+        sleep 5
+    done
+    $K3K_CMD wait --for=condition=available deploy/rancher-backup -n cattle-resources-system --timeout=300s
+    log "rancher-backup operator is ready"
+
+    # 6. Apply scheduled Backup CR
+    sed -e "s|__BACKUP_SCHEDULE__|${BACKUP_SCHEDULE}|g" \
+        -e "s|__BACKUP_RETENTION__|${BACKUP_RETENTION}|g" \
+        "$SCRIPT_DIR/post-install/06-backup-schedule.yaml" | $K3K_CMD apply -f -
+
+    log "rancher-backup operator deployed (schedule: ${BACKUP_SCHEDULE}, NFS: ${NFS_SERVER_IP})"
+fi
+
+# =============================================================================
 # Step 6: Copy TLS certificate to host cluster
 # =============================================================================
 log "Step 6/9: Copying Rancher TLS certificate to host cluster..."
@@ -616,6 +705,9 @@ echo -e " URL:           https://${HOSTNAME}"
 echo -e " Password:      ${BOOTSTRAP_PW}"
 echo -e " PVC Size:      ${PVC_SIZE}"
 [[ -n "$PRIVATE_REGISTRY" ]] && echo -e " Registry:      ${PRIVATE_REGISTRY}"
+if [[ "$ENABLE_BACKUP" == "yes" ]]; then
+    echo -e " Backup:        enabled (${BACKUP_SCHEDULE}, NFS: ${NFS_SERVER_IP})"
+fi
 echo ""
 echo -e " k3k kubeconfig:    ${KUBECONFIG_FILE}"
 echo -e " Merged kubeconfig: ${MERGED_KUBECONFIG}"

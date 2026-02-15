@@ -1,0 +1,16 @@
+---
+# Scheduled Backup CR for rancher-backup operator
+# Applied to the k3k cluster (not the host cluster)
+#
+# Placeholders replaced by deploy.sh:
+#   __BACKUP_SCHEDULE__  - Cron schedule (default: 0 */6 * * *)
+#   __BACKUP_RETENTION__ - Number of backups to retain (default: 10)
+---
+apiVersion: resources.cattle.io/v1
+kind: Backup
+metadata:
+  name: rancher-scheduled-backup
+spec:
+  resourceSetName: rancher-resource-set
+  schedule: "__BACKUP_SCHEDULE__"
+  retentionCount: __BACKUP_RETENTION__

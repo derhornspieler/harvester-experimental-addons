@@ -1,0 +1,19 @@
+---
+# Deploy rancher-backup CRDs inside the k3k cluster
+# Apply this to the k3k cluster (not the host cluster)
+#
+# Placeholders replaced by deploy.sh:
+#   __BACKUP_REPO__    - Helm chart repository (default: https://charts.rancher.io)
+#   __BACKUP_VERSION__ - Chart version (default: v9.0.1)
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: rancher-backup-crd
+  namespace: kube-system
+spec:
+  targetNamespace: cattle-resources-system
+  repo: __BACKUP_REPO__
+  chart: rancher-backup-crd
+  version: __BACKUP_VERSION__
+  helmVersion: v3

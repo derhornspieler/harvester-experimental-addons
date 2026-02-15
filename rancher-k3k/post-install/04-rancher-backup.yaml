@@ -1,0 +1,28 @@
+---
+# Deploy rancher-backup operator inside the k3k cluster
+# Apply this to the k3k cluster (not the host cluster)
+#
+# Placeholders replaced by deploy.sh:
+#   __BACKUP_REPO__    - Helm chart repository (default: https://charts.rancher.io)
+#   __BACKUP_VERSION__ - Chart version (default: v9.0.1)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cattle-resources-system
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: rancher-backup
+  namespace: kube-system
+spec:
+  targetNamespace: cattle-resources-system
+  repo: __BACKUP_REPO__
+  chart: rancher-backup
+  version: __BACKUP_VERSION__
+  helmVersion: v3
+  valuesContent: |-
+    persistence:
+      enabled: true
+      existingClaim: rancher-backup-pvc
