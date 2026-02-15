@@ -1,5 +1,5 @@
 # Harvester Configuration
-harvester_kubeconfig_path = "~/.kube/harvester-config"
+harvester_kubeconfig_path = "/Users/jruds/.kube/harvester-config"
 
 # Backup Server Configuration
 server_name = "k3k-backup-server"
@@ -26,10 +26,10 @@ resources = {
 ssh_user       = "rocky"
 ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAw/Ob7ikMCwPwos/Av7govYPic1jqutEM3+F7jm89uI hvst-mgmt"
 
-# VM Image - reuse existing Rocky 9 image from Harvester
+# VM Image - golden image from RKE2 deployment
 vm_image = {
-  name      = "rocky-9-cloudimg"
-  namespace = "harvester-public"
+  name      = "rke2-rocky9-golden-20260214"
+  namespace = "rke2-prod"
 }
 
 # Labels
