@@ -3,7 +3,7 @@
 # Applied to the k3k cluster (not the host cluster)
 #
 # Placeholders replaced by deploy.sh:
-#   __BACKUP_SCHEDULE__  - Cron schedule (default: 0 */6 * * *)
+#   __BACKUP_SCHEDULE__  - Cron schedule (default: */30 * * * *)
 #   __BACKUP_RETENTION__ - Number of backups to retain (default: 10)
 ---
 apiVersion: resources.cattle.io/v1
