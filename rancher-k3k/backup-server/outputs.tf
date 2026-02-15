@@ -22,3 +22,18 @@ output "nfs_mount" {
   description = "NFS mount command for verification"
   value       = "showmount -e ${var.ip_address}"
 }
+
+output "minio_endpoint" {
+  description = "MinIO S3 endpoint for rancher-backup operator"
+  value       = "${var.ip_address}:9000"
+}
+
+output "minio_console" {
+  description = "MinIO console URL"
+  value       = "https://${var.ip_address}:9001"
+}
+
+output "minio_bucket" {
+  description = "MinIO bucket for backups"
+  value       = var.minio_bucket
+}

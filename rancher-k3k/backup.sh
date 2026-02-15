@@ -146,7 +146,33 @@ log "  Saved cert-manager resources"
 if $K3K_CMD get crd backups.resources.cattle.io &>/dev/null; then
     log "Step 8/8: Triggering on-demand operator backup..."
     ONDEMAND_NAME="manual-${TIMESTAMP}"
-    $K3K_CMD apply -f - <<EOF
+
+    # Read S3 config from the scheduled backup (if it exists)
+    S3_ENDPOINT=$($K3K_CMD get backups.resources.cattle.io rancher-scheduled-backup \
+        -o jsonpath='{.spec.storageLocation.s3.endpoint}' 2>/dev/null || echo "")
+    S3_BUCKET=$($K3K_CMD get backups.resources.cattle.io rancher-scheduled-backup \
+        -o jsonpath='{.spec.storageLocation.s3.bucketName}' 2>/dev/null || echo "")
+
+    if [[ -n "$S3_ENDPOINT" && -n "$S3_BUCKET" ]]; then
+        log "  Using S3 storage: ${S3_ENDPOINT}/${S3_BUCKET}"
+        $K3K_CMD apply -f - <<EOF
+apiVersion: resources.cattle.io/v1
+kind: Backup
+metadata:
+  name: $ONDEMAND_NAME
+spec:
+  resourceSetName: rancher-resource-set-full
+  storageLocation:
+    s3:
+      credentialSecretName: minio-backup-creds
+      credentialSecretNamespace: cattle-resources-system
+      bucketName: ${S3_BUCKET}
+      endpoint: ${S3_ENDPOINT}
+      insecureTLSSkipVerify: true
+EOF
+    else
+        log "  No S3 config found, using operator default storage"
+        $K3K_CMD apply -f - <<EOF
 apiVersion: resources.cattle.io/v1
 kind: Backup
 metadata:
@@ -154,6 +180,7 @@ metadata:
 spec:
   resourceSetName: rancher-resource-set-full
 EOF
+    fi
 
     # Wait for backup to complete (5 min timeout)
     ATTEMPTS=0

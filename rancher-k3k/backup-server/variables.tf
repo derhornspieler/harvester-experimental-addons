@@ -70,6 +70,24 @@ variable "nfs_export" {
   default     = "/srv/nfs/k3k-rancher-backups"
 }
 
+variable "minio_root_user" {
+  description = "MinIO root username"
+  type        = string
+  default     = "minioadmin"
+}
+
+variable "minio_root_password" {
+  description = "MinIO root password"
+  type        = string
+  sensitive   = true
+}
+
+variable "minio_bucket" {
+  description = "MinIO bucket name for rancher backups"
+  type        = string
+  default     = "rancher-backups"
+}
+
 variable "labels" {
   description = "Additional labels/tags for the VM"
   type        = map(string)

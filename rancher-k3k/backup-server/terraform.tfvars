@@ -32,6 +32,9 @@ vm_image = {
   namespace = "rke2-prod"
 }
 
+# MinIO S3 Configuration
+minio_root_password = "minioadmin-secret-2026"
+
 # Labels
 labels = {
   environment = "production"

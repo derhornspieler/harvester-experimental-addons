@@ -165,17 +165,32 @@ read -rp "Enable rancher-backup operator? (yes/no) [yes]: " ENABLE_BACKUP
 ENABLE_BACKUP="${ENABLE_BACKUP:-yes}"
 
 if [[ "$ENABLE_BACKUP" == "yes" ]]; then
-    read -rp "Backup schedule (cron) [*/30 * * * *]: " BACKUP_SCHEDULE
-    BACKUP_SCHEDULE="${BACKUP_SCHEDULE:-*/30 * * * *}"
+    read -rp "Backup schedule (cron) [0 */6 * * *]: " BACKUP_SCHEDULE
+    BACKUP_SCHEDULE="${BACKUP_SCHEDULE:-0 */6 * * *}"
 
     read -rp "Backup retention count [10]: " BACKUP_RETENTION
     BACKUP_RETENTION="${BACKUP_RETENTION:-10}"
 
-    read -rp "Backup chart repo [https://charts.rancher.io]: " BACKUP_REPO
-    BACKUP_REPO="${BACKUP_REPO:-https://charts.rancher.io}"
-
     read -rp "Backup chart version [108.0.1+up9.0.1]: " BACKUP_VERSION
     BACKUP_VERSION="${BACKUP_VERSION:-108.0.1+up9.0.1}"
+
+    echo ""
+    echo -e "${CYAN}S3 Storage (MinIO on backup VM):${NC}"
+    read -rp "MinIO endpoint (host:port) [172.16.3.249:9000]: " MINIO_ENDPOINT
+    MINIO_ENDPOINT="${MINIO_ENDPOINT:-172.16.3.249:9000}"
+
+    read -rp "MinIO bucket [rancher-backups]: " MINIO_BUCKET
+    MINIO_BUCKET="${MINIO_BUCKET:-rancher-backups}"
+
+    read -rp "MinIO access key [minioadmin]: " MINIO_ACCESS_KEY
+    MINIO_ACCESS_KEY="${MINIO_ACCESS_KEY:-minioadmin}"
+
+    read -rsp "MinIO secret key: " MINIO_SECRET_KEY
+    echo ""
+    if [[ -z "$MINIO_SECRET_KEY" ]]; then
+        err "MinIO secret key is required"
+        exit 1
+    fi
 fi
 
 # --- Confirm ---
@@ -193,7 +208,7 @@ echo "  TLS Source:       $TLS_SOURCE"
 [[ -n "$PRIVATE_CA_PATH" ]] && echo "  CA Cert:          $PRIVATE_CA_PATH"
 [[ -n "$HELM_REPO_USER" ]] && echo "  Helm Auth:        $HELM_REPO_USER / ****" || echo "  Helm Auth:        none (public repos)"
 if [[ "$ENABLE_BACKUP" == "yes" ]]; then
-    echo "  Backup:           enabled (${BACKUP_SCHEDULE}, retain ${BACKUP_RETENTION})"
+    echo "  Backup:           enabled (${BACKUP_SCHEDULE}, retain ${BACKUP_RETENTION}, S3: ${MINIO_ENDPOINT})"
 else
     echo "  Backup:           disabled"
 fi
@@ -538,35 +553,98 @@ log "Rancher is running"
 # Step 5a: Deploy rancher-backup operator (optional)
 # =============================================================================
 if [[ "$ENABLE_BACKUP" == "yes" ]]; then
-    log "Step 5a: Deploying rancher-backup operator..."
+    log "Step 5a: Deploying rancher-backup operator via Rancher catalog API..."
 
-    # 1. Create namespace
-    $K3K_CMD create namespace cattle-resources-system --dry-run=client -o yaml | $K3K_CMD apply -f -
+    # 1. Get Rancher API token
+    RANCHER_URL="https://${HOSTNAME}"
+    log "Authenticating to Rancher API..."
+    RANCHER_TOKEN=$(curl -sk "${RANCHER_URL}/v3-public/localProviders/local?action=login" \
+        -H 'Content-Type: application/json' \
+        -d "{\"username\":\"admin\",\"password\":\"${BOOTSTRAP_PW}\"}" | \
+        python3 -c "import json,sys; print(json.load(sys.stdin)['token'])")
 
-    # 2. Apply CRD HelmChart
-    sed -e "s|__BACKUP_REPO__|${BACKUP_REPO}|g" \
-        -e "s|__BACKUP_VERSION__|${BACKUP_VERSION}|g" \
-        "$SCRIPT_DIR/post-install/03-rancher-backup-crd.yaml" | $K3K_CMD apply -f -
+    if [[ -z "$RANCHER_TOKEN" || "$RANCHER_TOKEN" == "None" ]]; then
+        err "Failed to get Rancher API token"
+        exit 1
+    fi
+    log "Rancher API authenticated"
 
-    # 3. Wait for CRDs to be registered
-    log "Waiting for rancher-backup CRDs..."
+    # 2. Wait for rancher-charts catalog repo to be ready
+    log "Waiting for rancher-charts catalog..."
     ATTEMPTS=0
-    while ! $K3K_CMD get crd backups.resources.cattle.io &>/dev/null; do
+    while true; do
+        REPO_READY=$(curl -sk "${RANCHER_URL}/v1/catalog.cattle.io.clusterrepos/rancher-charts" \
+            -H "Authorization: Bearer ${RANCHER_TOKEN}" | \
+            python3 -c "
+import json,sys
+data=json.load(sys.stdin)
+for c in data.get('status',{}).get('conditions',[]):
+    if c.get('type')=='FollowerDownloaded' and c.get('status')=='True':
+        print('yes'); sys.exit(0)
+print('no')" 2>/dev/null || echo "no")
+        if [[ "$REPO_READY" == "yes" ]]; then break; fi
         if [[ $ATTEMPTS -ge 60 ]]; then
-            err "Timed out waiting for rancher-backup CRDs"
+            err "Timed out waiting for rancher-charts catalog"
             exit 1
         fi
         ATTEMPTS=$((ATTEMPTS + 1))
         sleep 5
     done
-    log "rancher-backup CRDs registered"
+    log "rancher-charts catalog is ready"
 
-    # 4. Apply operator HelmChart
-    sed -e "s|__BACKUP_REPO__|${BACKUP_REPO}|g" \
-        -e "s|__BACKUP_VERSION__|${BACKUP_VERSION}|g" \
-        "$SCRIPT_DIR/post-install/04-rancher-backup.yaml" | $K3K_CMD apply -f -
+    # 3. Install rancher-backup CRD + operator via catalog API
+    # This is the only method that makes the operator visible in the Rancher UI.
+    log "Installing rancher-backup via catalog API..."
+    INSTALL_RESULT=$(curl -sk "${RANCHER_URL}/v1/catalog.cattle.io.clusterrepos/rancher-charts?action=install" \
+        -H "Authorization: Bearer ${RANCHER_TOKEN}" \
+        -H 'Content-Type: application/json' \
+        -d "{
+          \"charts\": [
+            {
+              \"chartName\": \"rancher-backup-crd\",
+              \"version\": \"${BACKUP_VERSION}\",
+              \"releaseName\": \"rancher-backup-crd\",
+              \"namespace\": \"cattle-resources-system\",
+              \"annotations\": {
+                \"catalog.cattle.io/ui-source-repo-type\": \"cluster\",
+                \"catalog.cattle.io/ui-source-repo\": \"rancher-charts\"
+              }
+            },
+            {
+              \"chartName\": \"rancher-backup\",
+              \"version\": \"${BACKUP_VERSION}\",
+              \"releaseName\": \"rancher-backup\",
+              \"namespace\": \"cattle-resources-system\",
+              \"values\": {
+                \"s3\": {
+                  \"enabled\": true,
+                  \"credentialSecretName\": \"minio-backup-creds\",
+                  \"credentialSecretNamespace\": \"cattle-resources-system\",
+                  \"bucketName\": \"${MINIO_BUCKET}\",
+                  \"endpoint\": \"${MINIO_ENDPOINT}\",
+                  \"insecureTLSSkipVerify\": true
+                }
+              },
+              \"annotations\": {
+                \"catalog.cattle.io/ui-source-repo-type\": \"cluster\",
+                \"catalog.cattle.io/ui-source-repo\": \"rancher-charts\"
+              }
+            }
+          ],
+          \"noHooks\": false,
+          \"timeout\": \"600s\",
+          \"wait\": true,
+          \"namespace\": \"cattle-resources-system\"
+        }")
 
-    # 5. Wait for operator deployment
+    OP_NAME=$(echo "$INSTALL_RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('operationName',''))" 2>/dev/null || echo "")
+    if [[ -z "$OP_NAME" ]]; then
+        err "Catalog install failed: $INSTALL_RESULT"
+        exit 1
+    fi
+    log "Catalog install initiated: $OP_NAME"
+
+    # 4. Wait for operator deployment
     log "Waiting for rancher-backup operator..."
     ATTEMPTS=0
     while ! $K3K_CMD get deploy/rancher-backup -n cattle-resources-system &>/dev/null; do
@@ -580,12 +658,34 @@ if [[ "$ENABLE_BACKUP" == "yes" ]]; then
     $K3K_CMD wait --for=condition=available deploy/rancher-backup -n cattle-resources-system --timeout=300s
     log "rancher-backup operator is ready"
 
-    # 6. Apply scheduled Backup CR
-    sed -e "s|__BACKUP_SCHEDULE__|${BACKUP_SCHEDULE}|g" \
-        -e "s|__BACKUP_RETENTION__|${BACKUP_RETENTION}|g" \
-        "$SCRIPT_DIR/post-install/06-backup-schedule.yaml" | $K3K_CMD apply -f -
+    # 5. Create S3 credentials secret
+    log "Creating MinIO S3 credentials secret..."
+    $K3K_CMD -n cattle-resources-system create secret generic minio-backup-creds \
+        --from-literal=accessKey="$MINIO_ACCESS_KEY" \
+        --from-literal=secretKey="$MINIO_SECRET_KEY" \
+        --dry-run=client -o yaml | $K3K_CMD apply -f -
 
-    log "rancher-backup operator deployed (schedule: ${BACKUP_SCHEDULE}, retain: ${BACKUP_RETENTION})"
+    # 6. Create scheduled Backup CR with S3 storage
+    log "Creating scheduled backup (${BACKUP_SCHEDULE}, retain ${BACKUP_RETENTION})..."
+    $K3K_CMD apply -f - <<EOF
+apiVersion: resources.cattle.io/v1
+kind: Backup
+metadata:
+  name: rancher-scheduled-backup
+spec:
+  resourceSetName: rancher-resource-set-full
+  schedule: "${BACKUP_SCHEDULE}"
+  retentionCount: ${BACKUP_RETENTION}
+  storageLocation:
+    s3:
+      credentialSecretName: minio-backup-creds
+      credentialSecretNamespace: cattle-resources-system
+      bucketName: ${MINIO_BUCKET}
+      endpoint: ${MINIO_ENDPOINT}
+      insecureTLSSkipVerify: true
+EOF
+
+    log "rancher-backup deployed (schedule: ${BACKUP_SCHEDULE}, S3: ${MINIO_ENDPOINT}/${MINIO_BUCKET})"
 fi
 
 # =============================================================================
@@ -696,7 +796,7 @@ echo -e " Password:      ${BOOTSTRAP_PW}"
 echo -e " PVC Size:      ${PVC_SIZE}"
 [[ -n "$PRIVATE_REGISTRY" ]] && echo -e " Registry:      ${PRIVATE_REGISTRY}"
 if [[ "$ENABLE_BACKUP" == "yes" ]]; then
-    echo -e " Backup:        enabled (${BACKUP_SCHEDULE}, retain ${BACKUP_RETENTION})"
+    echo -e " Backup:        enabled (${BACKUP_SCHEDULE}, retain ${BACKUP_RETENTION}, S3: ${MINIO_ENDPOINT})"
 fi
 echo ""
 echo -e " k3k kubeconfig:    ${KUBECONFIG_FILE}"
